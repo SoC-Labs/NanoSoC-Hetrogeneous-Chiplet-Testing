@@ -1,0 +1,36 @@
+# Submodules for the heterogeneous chiplet test framework.
+# Copyright 2026, SoC Labs (www.soclabs.org)
+#
+# TWO SUBMODULES, NOT FOUR. TideLink and TideChart are deliberately absent —
+# they are already submodules OF BOTH CHIPLETS, at different commits, and a
+# third pin here would produce a checkout matching neither die. That is the
+# lab's "two-checkouts trap": you end up reading RTL that is not the RTL on the
+# board. Reach the D2D IP through the chiplet that owns it:
+#
+#     deps/eth-chiplet/tidelink        <- authoritative (proven on silicon)
+#     deps/eth-chiplet/tidechart
+#     deps/compute-chiplet/tidelink    <- the compute die's own pin
+#
+# set_env.sh points TIDELINK_HOME / TIDECHART_HOME at the eth-chiplet copies.
+# `make deps` fetches both chiplets plus those two nested modules and nothing
+# else; `make deps-full` goes all the way down. See docs/CI.md.
+#
+# The `branch` keys below document INTENT for `git submodule update --remote`.
+# The committed gitlink is still what a plain `--init` checks out, and that is
+# what CI and the bench use.
+
+[submodule "deps/eth-chiplet"]
+	path = deps/eth-chiplet
+	url = git@github.com:SoC-Labs/NanoSoC-Ethernet-Chiplet.git
+	# NOT main. main's TideLink pin predates the KR260 chiplet FPGA targets —
+	# it carries only pynq-z2/mps3, so `deploy_pair_role SOC=kr260_eth` has
+	# nothing to build and the entire bench flow is dead on arrival. The
+	# feat/tidelink-chiplet-port branch is the line that reached FCSM=4 on
+	# silicon (2026-07-27) and carries fpga/targets/kr260-eth-chiplet{,-flip}.
+	# Re-point at main once that work merges.
+	branch = feat/tidelink-chiplet-port
+
+[submodule "deps/compute-chiplet"]
+	path = deps/compute-chiplet
+	url = git@github.com:SoC-Labs/NanoSoC-Compute-Chiplet.git
+	branch = main

@@ -1,0 +1,272 @@
+# fpgahub manifest — NanoSoC heterogeneous chiplet testing
+#
+# Lets the two-board pair (kr260_01 = die_a, kr260_02 = die_b) be deployed,
+# probed and recovered through the lab tool. See fpgahub/README.md for how to
+# register this file, and docs/SAFETY.md before running anything.
+#
+# ---------------------------------------------------------------------------
+# 🔴 READ THIS BEFORE EDITING — three constraints established against the LIVE
+#    daemon on mapstone-dev (2026-07-29). Violating any of them means the
+#    manifest will not load, or an action will fail at token-render time.
+#
+# 1. There is NO `{pair.*}` namespace. It was removed when fpgahub moved to the
+#    board/target/link model. The known namespaces are exactly:
+#      artefact, board, chassis, firmware, host, link, manifest, port, script
+#    This is why the ancestor manifest (nanosoc-ethernet-chiplet/tidelink/
+#    fpga/fpgahub.toml) no longer loads:
+#      "action:deploy_pair.command: unknown token namespace 'pair' in
+#       {pair.local.role}"
+#
+# 2. `{link.*}` does NOT resolve either. /api/v1/groups shows each KR260 as its
+#    own 2-member CHASSIS (kr260_0N_pl + kr260_0N); there is no [links.<id>]
+#    joining kr260_01 and kr260_02. So roles are passed as LITERALS, and there
+#    is one action per role. An operator adding a [links.het_pair] block later
+#    could collapse these into a single {link.local.role} action.
+#
+# 3. `{host.ssh}` is null on the `_pl` targets and raises. Bind and dispatch
+#    every action here against kr260_01 / kr260_02 (the PS entries) ONLY.
+# ---------------------------------------------------------------------------
+
+schema_version = 1
+project        = "nanosoc-het-chiplet-testing"
+description    = "NanoSoC heterogeneous chiplet D2D testing — two-KR260 TideLink pair over J21"
+
+# Gates dispatch to boards carrying the JTAG-POR capability. kr260_01 and
+# kr260_02 declare it; the kr260_0N_pl entries declare only
+# ethernet_phy_lan8720, so this also keeps these actions off the `_pl` targets
+# (where {host.ssh} would raise anyway). Do NOT repeat this tag in any action's
+# `requires_capabilities` — the loader rejects the redundancy.
+[requires]
+capabilities = ["zynqmp_jtag_por"]
+
+# ---------------------------------------------------------------------------
+# Deploy — one action per role, one board each.
+#
+#   kr260_01 -> deploy_eth_die_a  (kr260-eth-chiplet,      role strap 0)
+#   kr260_02 -> deploy_eth_die_b  (kr260-eth-chiplet-flip, role strap 1)
+#
+# 🔴 ALWAYS pair a die_a image with a die_b image. The same image on both
+#    drives two outputs onto every one of the 18 ribbon lanes. docs/SAFETY.md H6.
+# 🔴 NEVER PL-reload one side of a live link — reload both. docs/SAFETY.md H5.
+#
+# These call the eth-chiplet submodule's own proven Makefile, which handles the
+# ZynqMP specifics: header-stripped .bin via bit2bin_zynqmp.py (NOT the
+# byte-swapped Zynq-7000 flavour, which silently corrupts a ZynqMP load),
+# `fpgautil -b <bin> -f Full`, and the AFI PS-master-port width re-poke to
+# 32-bit that is required after EVERY PL load and is not persisted. It also
+# threads KR260_AFI_NO_CANARY=1 for kr260-eth-chiplet* targets, suppressing the
+# bare-link AFI canary reads at 0x8403_xxxx that wedged kr260_01 on 2026-07-27.
+#
+# `cwd` is unset, so it defaults to the manifest's parent directory — the repo
+# root — and the relative -C path resolves from there.
+#
+# PREREQUISITE: `make deps` must have run with RECURSIVE submodule init;
+# deps/eth-chiplet/tidelink is a nested submodule and is not present in a
+# shallow checkout.
+#
+# `requires` is deliberately omitted (matching the ancestor's reasoning): the
+# Makefile's deploy rule already errors when the bitstreams are absent, and a
+# flag handshake would refuse to dispatch against bitstreams sitting on disk
+# from an external Vivado run. Gate on the filesystem, not on flag bookkeeping.
+# ---------------------------------------------------------------------------
+
+[[actions]]
+id          = "deploy_eth_die_a"
+title       = "Deploy eth-chiplet die_a image (run on kr260_01)"
+description = """
+Loads kr260-eth-chiplet (role strap 0, straight J21 ball map) onto this board.
+Pair with deploy_eth_die_b on the other board — never the same image on both.
+Watch for fpga_manager state = operating, then a full SSH round-trip (which is
+what proves the PS AXI bus is healthy rather than wedged).
+"""
+command     = ["make", "-C", "deps/eth-chiplet/tidelink/fpga", "deploy_pair_role",
+               "SOC=kr260_eth",
+               "ROLE=die_a",
+               "KR260_HOST={host.ssh}",
+               "KR260_PROXY={host.proxy}"]
+secret_env  = { KR260_PASSWORD = "kr260.ssh_password" }
+produces    = ["bitstream_loaded"]
+timeout_s   = 900
+
+[[actions]]
+id          = "deploy_eth_die_b"
+title       = "Deploy eth-chiplet die_b (-flip) image (run on kr260_02)"
+description = """
+Loads kr260-eth-chiplet-flip (role strap 1, MIRRORED J21 ball map) onto this
+board. The flip build is what makes each straight-through ribbon conductor one
+driver against one receiver. Pair with deploy_eth_die_a on the other board.
+"""
+command     = ["make", "-C", "deps/eth-chiplet/tidelink/fpga", "deploy_pair_role",
+               "SOC=kr260_eth",
+               "ROLE=die_b",
+               "KR260_HOST={host.ssh}",
+               "KR260_PROXY={host.proxy}"]
+secret_env  = { KR260_PASSWORD = "kr260.ssh_password" }
+produces    = ["bitstream_loaded"]
+timeout_s   = 900
+
+# --- deploy_compute_die_b ---------------------------------------------------
+# 🚫 INTENTIONALLY ABSENT. The compute chiplet has NO KR260 bitstream, no FPGA
+#    target, no block design and no XDC — and its RTL top has no PS-backdoor
+#    port to attach one to. See docs/BRINGUP_GAPS.md G1 and G2.
+#
+#    An action here would be dispatchable and would fail. Add it only when a
+#    `kr260-compute-chiplet` target actually builds, and update the deploy
+#    matrix in docs/BENCH_RUNBOOK.md §4 in the same change.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Probe / test
+# ---------------------------------------------------------------------------
+
+# L0. No board is touched — this is the address-guard, registry and safety-
+# decorator suite. It is gated behind nothing and should pass before any board
+# work. Dispatched against a board only because fpgahub dispatches per target.
+[[actions]]
+id          = "test_offline"
+title       = "L0: offline host-logic tests (no board touched)"
+description = """
+Runs the pure-host suite: address-guard maths, target registry, safety
+decorators. No SSH, no /dev/mem, no board access of any kind. Must pass before
+anything below — it is the code that stands between a typo and a wedged board.
+"""
+command     = ["make", "test-offline"]
+timeout_s   = 600
+
+# L1. READ-ONLY and wedge-safe: boot-ROM aliveness through the backdoor window
+# plus the RO TideLink config plane. Touches only combinational ROM and RO APB
+# registers on the free-running system clock, inside the window, so an
+# in-window miss returns SLVERR rather than hanging. docs/SAFETY.md §3.
+#
+# This probes BOTH boards from the pair config (hetsoc.toml), so dispatch it
+# once — against kr260_01 by convention — not once per board.
+[[actions]]
+id          = "bench_status"
+title       = "L1: read-only probe of both boards (wedge-safe)"
+description = """
+Boot-ROM aliveness + TideLink config-plane readback on both dies. Read-only and
+cannot wedge the bus. Expect the two role straps to read OPPOSITE
+(die_a effective_role=0 = master, die_b = 1); if they match, the same image is
+on both boards — power off and reflash before the ribbon carries anything.
+
+Probes both boards per hetsoc.toml — dispatch ONCE, against kr260_01.
+"""
+command     = ["make", "bench-status"]
+requires    = ["bitstream_loaded"]
+timeout_s   = 600
+
+# ---------------------------------------------------------------------------
+# Recovery — encodes BOTH fpgahub quirks so an operator never has to remember
+# them mid-incident.
+#
+# Quirk A: the per-board endpoints (board reset / board show / actions) 404
+#   from client hosts running an older CLI, because it calls the pre-upgrade
+#   /api/v1/boards/{name}/... routes. The daemon serves /api/v1/targets/{name}/...
+#   This action runs ON the daemon host (the daemon spawns it), so it can hit
+#   the unix socket directly and sidesteps the skew entirely.
+#
+# Quirk B: `fpgahub board reset <id>` fans out over every CHASSIS member and
+#   STOPS ON FIRST FAILURE. /api/v1/groups lists kr260_0N_pl FIRST, and that
+#   target has capabilities ["ethernet_phy_lan8720"] with no reset config, so
+#   dispatch_reset raises and the real kr260_0N is never reset. This action
+#   POSTs to the SINGLE target instead.
+#
+# NOTE the id is `por_recover`, NOT `reset`: an action with id="reset" would
+# OVERRIDE the board-level kr260_jtag_por plugin for `fpgahub target reset`,
+# because method=="default" prefers a manifest action of that id. Do not rename.
+#
+# A POR clears the PL — the board comes back with NO bitstream loaded. Redeploy
+# both boards before continuing, and never bring a half-loaded pair back up.
+# ---------------------------------------------------------------------------
+
+[[actions]]
+id          = "por_recover"
+title       = "Recover a wedged board — JTAG POR of THIS target only"
+description = """
+Issues a JTAG POR (method=default, plugin=kr260_jtag_por) against this single
+target via the daemon's unix socket, avoiding both the client-side 404 and the
+group-reset breakage on the _pl chassis member.
+
+Use when a board stops answering ping/SSH mid-run with no error message — that
+is the out-of-window-read wedge (docs/SAFETY.md H1) or the intermittent
+cross-die data-plane wedge (H3).
+
+POR ONE BOARD AT A TIME, ~8 s apart. Back-to-back PORs hit a transient
+"cable not found" on the second board; retry once and it succeeds.
+
+The board pings again ~10 s later. A POR clears the PL, so redeploy BOTH boards
+afterwards. If a pair wedges twice on the same test, stop — H3 needs an
+RTL/timing fix, not more POR cycles.
+"""
+command     = ["curl", "-sS", "--fail",
+               "--unix-socket", "/run/fpgahub/fpgahub.sock",
+               "-X", "POST",
+               "http://localhost/api/v1/targets/{board.name}/reset",
+               "-H", "Content-Type: application/json",
+               "-d", "{\"method\":\"default\",\"confirm\":true}"]
+confirm     = true
+timeout_s   = 120
+
+# ---------------------------------------------------------------------------
+# Composite
+# ---------------------------------------------------------------------------
+
+# Deliberately NOT a full CI pipeline. It stops at the read-only probe: the
+# link bring-up needs BOTH boards driven CONCURRENTLY (each die's cal_done gates
+# on the peer over the ribbon), which a per-board action sequence cannot
+# express. Bring-up is orchestrated host-side by the framework instead.
+[[actions]]
+id        = "ci_deploy_probe_die_a"
+title     = "die_a: deploy -> read-only probe"
+steps     = ["deploy_eth_die_a", "bench_status"]
+timeout_s = 0
+
+# ---------------------------------------------------------------------------
+# [TBD] Actions deliberately NOT declared yet, and what must land first
+# ---------------------------------------------------------------------------
+#
+# Every command above uses a target this repo can point at today: the three
+# make targets README.md commits to (`deps`, `test-offline`, `bench-status`),
+# the eth-chiplet submodule's proven deploy rule, and the fpgahub reset API.
+# The following are NOT declared because their entry points do not exist yet —
+# declaring them would give an operator a dispatchable action that fails.
+#
+#   bringup_link       `make bench-bringup` now EXISTS, but it drives BOTH
+#                      boards CONCURRENTLY (each die's cal_done gates on the
+#                      peer over the ribbon). An fpgahub action is dispatched
+#                      per target, so it cannot express that — and dispatching
+#                      it twice, once per board, would re-run bring-up on a
+#                      live link, which desyncs it and hangs the sender's peer
+#                      writes (docs/SAFETY.md H4; this wedged die_a 2026-07-29).
+#                      Keep bring-up host-side. Do NOT add this action.
+#
+#   regress_ci_safe    `make regress` (L0 -> L1/L2 -> L3, never crosses the
+#                      link) is a reasonable action to add. It is omitted only
+#                      because, like bench_status, it drives BOTH boards from
+#                      hetsoc.toml and so must be dispatched exactly once —
+#                      which per-board dispatch does not enforce. Add it with
+#                      that caveat in the title if CI wants it.
+#
+#   regress_data_plane 🔴 DO NOT ADD as a dispatchable action. L4/L5 are
+#                      ATTENDED-ONLY (docs/SAFETY.md H3) — the cross-die data
+#                      plane wedges intermittently even when driven correctly.
+#                      An fpgahub action is by definition unattended dispatch.
+#                      The suite already guards this twice over: the data_plane
+#                      and soak markers are deselected unless --data-plane, AND
+#                      the runner refuses without I_ACCEPT_WEDGE_RISK=1.
+#
+#   deploy_compute_*   Blocked on docs/BRINGUP_GAPS.md G1 + G2.
+#
+#   ethernet actions   Blocked on: no LAN8720 ever fitted, and no ethernet
+#                      firmware for either chiplet. The `_pl` board entries and
+#                      per-die pl_mac already exist in the hub (see README §5),
+#                      so the hub side is NOT the blocker. Model on
+#                      ethernet-subsystem-ahb/fpga/fpgahub.toml, and gate with
+#                      requires_capabilities = ["ethernet_phy_lan8720"].
+#
+# [artefacts.*] are also NOT declared. The bitstreams live inside a NESTED
+# submodule (deps/eth-chiplet/tidelink/imp/fpga/output/kr260-eth-chiplet{,-flip}/)
+# which is not checked out until `make deps` runs recursively, and artefact
+# paths are resolved relative to this manifest. VERIFY the path exists after a
+# recursive `make deps` before declaring them; the deploy rule finds its own
+# artefacts today, so nothing depends on this.

@@ -1,0 +1,160 @@
+# -----------------------------------------------------------------------------
+# CI for the NanoSoC heterogeneous chiplet test framework.
+#
+# Copyright 2026, SoC Labs (www.soclabs.org)
+# -----------------------------------------------------------------------------
+# TWO JOBS, AND THE SPLIT IS THE WHOLE DESIGN:
+#
+#   offline   every push / PR, GitHub-hosted. Lint + L0. No boards, no
+#             submodules, no secrets. This is the gate that must always be
+#             green, so it is built to depend on as little as possible.
+#
+#   nightly   manual dispatch (or the nightly schedule), SELF-HOSTED runner in
+#             the lab only. L1/L2 + L3 — one board, then the pair. It leases
+#             the bench, so it must not run concurrently with itself or with a
+#             human at the bench; `concurrency` below enforces the former.
+#
+# THERE IS NO JOB THAT RUNS L4 OR L5, and adding one would be a mistake.
+# The cross-die data plane intermittently hangs on current silicon (the AXI
+# FCSMs shipped without their recovery path, so a single bit error stops the
+# link permanently). A hang is a wedged PS bus; a wedged KR260 is 100% packet
+# loss and comes back only via a JTAG POR issued from another host. An
+# unattended job cannot do that, so an unattended job must never be able to
+# cause it. Those levels are run by hand, attended:
+#
+#     I_ACCEPT_WEDGE_RISK=1 make test-dataplane
+#
+# See docs/CI.md and docs/SAFETY.md.
+# -----------------------------------------------------------------------------
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    # 02:30 UTC — after the lab has gone home, before anyone arrives.
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+    inputs:
+      run_hardware:
+        description: "Run the nightly hardware job (L1/L2/L3) on the self-hosted lab runner"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # L0 + lint. Hosted. Must always pass.
+  # ---------------------------------------------------------------------------
+  offline:
+    name: "L0 offline + lint"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # NOT recursive: the chiplet submodules are declared over SSH and a
+          # hosted runner has no key for them. L0 does not need a line of RTL.
+          submodules: false
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.11 for stdlib tomllib — hetsoc.config reads TOML.
+          python-version: "3.11"
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+
+      - name: Lint (ruff + shellcheck + makefile parse)
+        run: ./ci/run_ci.sh lint
+
+      - name: L0 offline tests
+        run: ./ci/run_ci.sh offline
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-offline
+          path: |
+            build/results/
+            build/regress/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish JUnit summary
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: build/results/junit.xml
+          fail_on_failure: false
+          require_tests: false
+
+  # ---------------------------------------------------------------------------
+  # L1/L2 + L3 on the real pair. SELF-HOSTED, in the lab, with the boards.
+  # ---------------------------------------------------------------------------
+  nightly-hardware:
+    name: "L1-L3 on the KR260 pair (self-hosted)"
+    # Never on a hosted runner: this labels-matches the lab machine that has
+    # ssh access to the boards, an fpgahub client, and the SSH keys for the
+    # submodules. A hosted runner would fail preflight in seconds — correctly,
+    # but pointlessly.
+    runs-on: [self-hosted, linux, soclabs-bench, kr260-pair]
+    needs: offline
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_hardware)
+    timeout-minutes: 90
+    # One bench, one job. Queue rather than race — two jobs deploying to the
+    # same boards is a wedge, not a flaky test.
+    concurrency:
+      group: kr260-pair-bench
+      cancel-in-progress: false
+    env:
+      # Pinned off. The nightly job runs the control plane only.
+      I_ACCEPT_WEDGE_RISK: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false      # `make deps` fetches them with the right rewrites
+
+      - name: Preflight (is the bench there and free?)
+        run: |
+          source set_env.sh
+          ./scripts/preflight.sh --pair
+
+      - name: Lease both boards
+        run: |
+          source set_env.sh
+          make lease
+
+      - name: Nightly regression (L0 -> L1/L2 -> L3)
+        run: ./ci/run_ci.sh nightly
+
+      - name: Release the lease
+        if: always()
+        run: |
+          source set_env.sh
+          make release || true
+
+      - name: Recover any wedged board
+        # Only on failure, and only ever a POR — never a reflash. If L3 wedged
+        # a board, leaving it dead until morning costs the whole lab a day.
+        if: failure()
+        run: |
+          source set_env.sh
+          ./flows/recover.sh || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-nightly
+          path: |
+            build/results/
+            build/regress/
+          if-no-files-found: warn
+          retention-days: 30

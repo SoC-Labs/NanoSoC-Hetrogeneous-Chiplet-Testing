@@ -1,0 +1,52 @@
+# =============================================================================
+# hetsoc — packaging.
+#
+# NO RUNTIME DEPENDENCIES, deliberately. The L0 tier must import and run in any
+# CI container, and the boards run plain Ubuntu with whatever python3 the image
+# ships — so TOML parsing degrades to a documented subset parser rather than
+# requiring `tomli` (see hetsoc/_toml.py). `pip install .[toml]` adds full TOML
+# on a Python older than 3.11 if you want it.
+#
+# Copyright (C) 2026, SoC Labs (www.soclabs.org)
+# =============================================================================
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hetsoc"
+version = "0.1.0"
+description = "Host test framework for the NanoSoC heterogeneous chiplet pair (TideLink D2D across two KR260s)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Copyright (C) 2026, SoC Labs (www.soclabs.org)" }
+authors = [{ name = "SoC Labs", email = "info@soclabs.org" }]
+keywords = ["chiplet", "die-to-die", "tidelink", "nanosoc", "kr260", "silicon-test"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = []
+
+[project.optional-dependencies]
+toml = ["tomli>=1.1.0; python_version < '3.11'"]
+test = ["pytest>=7.0"]
+
+[project.scripts]
+hetsoc = "hetsoc.cli:main"
+
+[project.urls]
+Homepage = "https://www.soclabs.org"
+
+[tool.setuptools]
+packages = ["hetsoc"]
+
+[tool.setuptools.package-data]
+hetsoc = ["agent.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests_unit"]
+# L0 only: these must pass with no hardware and no network.
+addopts = "-q"

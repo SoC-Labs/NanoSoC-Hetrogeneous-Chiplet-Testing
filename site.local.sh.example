@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+#-----------------------------------------------------------------------------
+# site.local.sh.example — per-rig overrides. Copy to site.local.sh (gitignored).
+#
+# Copyright 2026, SoC Labs (www.soclabs.org)
+#-----------------------------------------------------------------------------
+# set_env.sh sources site.local.sh BEFORE its own defaults, and every default
+# is assign-if-unset, so anything you export here wins.
+#
+# The committed defaults already match the SoC Labs bench (kr260_01 /
+# kr260_02). You only need this file for a different rig, an ssh proxy, or a
+# board password — and a password must never be committed, which is the main
+# reason this file exists.
+#-----------------------------------------------------------------------------
+
+# --- Boards -----------------------------------------------------------------
+# export HETSOC_BOARD_A=kr260_01
+# export HETSOC_BOARD_B=kr260_02
+# export HETSOC_BOARD_A_HOST=ubuntu@10.22.24.159
+# export HETSOC_BOARD_B_HOST=ubuntu@10.22.24.153
+
+# Which board carries which J21 pinout. die_a is the straight pinout, die_b the
+# mirrored one — swapping these means swapping BITSTREAMS too, not just labels.
+# export HETSOC_ROLE_A=die_a
+# export HETSOC_ROLE_B=die_b
+
+# --- Access -----------------------------------------------------------------
+# Board sudo/ssh password. Prefer ssh keys + NOPASSWD sudo; this is the escape
+# hatch, and it is why site.local.sh is gitignored.
+# export HETSOC_PASSWORD='...'
+
+# ssh ProxyJump host, if the boards are not directly reachable.
+# export HETSOC_SSH_PROXY=some-bastion
+
+# The host where fpgahub's per-board endpoints resolve and the JTAG cables live.
+# export HETSOC_FPGAHUB_DEV_HOST=mapstone-dev
+
+# --- Bitstream targets ------------------------------------------------------
+# TideLink fpga/targets/ entry names, per die. The compute-side het-pair target
+# does not exist yet (docs/BRINGUP_GAPS.md); point at it here once it is built.
+# export HETSOC_ETH_TARGET_A=kr260-eth-chiplet
+# export HETSOC_COMPUTE_TARGET_B=kr260-compute-chiplet-flip
+
+# --- Python -----------------------------------------------------------------
+# Force a specific interpreter for the venv (3.11+ preferred for tomllib).
+# export HETSOC_PYTHON=/usr/bin/python3.12

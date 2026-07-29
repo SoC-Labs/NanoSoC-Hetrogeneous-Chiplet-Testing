@@ -1,0 +1,105 @@
+# =============================================================================
+# hetsoc.toml — bench description for the NanoSoC heterogeneous chiplet pair.
+#
+# Copy to ./hetsoc.toml (or point $HETSOC_CONFIG at it) and edit the two board
+# addresses. Search order, first hit wins (configs are NOT merged — a
+# half-merged address map is more dangerous than a missing one):
+#
+#     $HETSOC_CONFIG   ->   ./hetsoc.toml   ->   ~/.config/hetsoc.toml
+#
+# >>> THE ONE THING TO GET RIGHT <<<
+# `role` decides which bitstream belongs on which board: die_a is the
+# master/grandmaster, die_b the slave, and the two images are MIRRORED. The same
+# image on both boards drives two outputs onto every J21 ribbon lane. Everything
+# else in this file is recoverable; that is not.
+#
+# Copyright (C) 2026, SoC Labs (www.soclabs.org)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Pairs. `hetsoc <cmd>` uses [pair.default] unless you pass --pair NAME.
+# -----------------------------------------------------------------------------
+[pair.default]
+# The heterogeneous pair this repo exists to test: eth chiplet <-> compute
+# chiplet. NOTE the compute side cannot run yet — see [target.*] below.
+a = "eth"
+b = "compute"
+description = "eth chiplet (die_a) <-> compute chiplet (die_b) over J21"
+
+[pair.eth-homogeneous]
+# The pair that IS proven on silicon (2026-07-27..29): eth die_a <-> eth die_b.
+# Use this to sanity-check the bench itself before blaming the het pair.
+a = "eth"
+b = "eth_b"
+description = "homogeneous eth<->eth control pair (proven on silicon)"
+
+# -----------------------------------------------------------------------------
+# Boards.
+#   host           ssh destination; a bare IP gets the `ubuntu` user
+#   fpgahub        fpgahub board name — REQUIRED for POR recovery and deploy
+#   target         a name from the hetsoc.targets registry (`hetsoc targets`)
+#   role           die_a (master/grandmaster) | die_b (slave)
+#   password       optional; prefer $HETSOC_PASSWORD / $KR260_PASSWORD, or ssh keys
+#   transport      ssh-agent (default, one persistent connection) | ssh-oneshot
+#   deploy_command optional; overrides the target's fpgahub deploy action.
+#                  {host} {role} {name} {fpgahub} {target} are substituted.
+#   timeout_s      per-operation wall-clock bound; a hang raises WedgeDetected
+# -----------------------------------------------------------------------------
+[board.eth]
+host = "ubuntu@10.22.24.159"
+fpgahub = "kr260_01"
+target = "kr260-eth-chiplet"
+role = "die_a"
+
+[board.compute]
+host = "ubuntu@10.22.24.153"
+fpgahub = "kr260_02"
+target = "kr260-compute-chiplet"
+role = "die_b"
+
+[board.eth_b]
+# The die_b half of the homogeneous control pair — the same bitstream family,
+# the mirrored (-flip) image.
+host = "ubuntu@10.22.24.153"
+fpgahub = "kr260_02"
+target = "kr260-eth-chiplet"
+role = "die_b"
+
+# -----------------------------------------------------------------------------
+# Target overrides — the per-design escape hatch from CHIPLET_HOST_TOOLING_PLAN.md.
+# This is the ONLY supported way to give a target a different address window,
+# deliberately, so a value that can wedge a board lands in a reviewable file
+# next to its citation instead of in a script literal.
+#
+# >>> THE COMPUTE CHIPLET IS UNRESOLVED — AND MUST STAY THAT WAY FOR NOW <<<
+# There is no FPGA/KR260 port for the compute chiplet: no bitstream, no .hwh,
+# and no external AHB pad group on the chip boundary at all, so there is no
+# PS-visible backdoor window. `kr260-compute-chiplet.to_host()` therefore raises
+# ProvisionalTargetError on every call — by design. Do NOT paper over it by
+# copying the eth chiplet's 0x4_0000_0000: a guessed window base on ZynqMP is an
+# unrecoverable AXI hang (JTAG POR only).
+#
+# When the port exists, uncomment and fill in from the REAL .hwh MEMRANGE — and
+# note `source` is mandatory: hetsoc refuses to de-provisionalise a target whose
+# provenance still says TBD.
+#
+# [target.kr260-compute-chiplet]
+# window_base = 0x400000000        # <- from the built bitstream's .hwh, not by analogy
+# window_size = 0x100000000
+# peer_aperture = 0x41             # <- UNRESOLVED today: the repo's docs/tests say
+#                                  #    0x40, but chiplet_d2d_decode's `a_peer =
+#                                  #    haddr[24]` puts it at 0x41 and the tests
+#                                  #    bypass that decoder. Reconcile first.
+# tlapb_base = 0x40030000          # DERIVED (d2d0 window + blk==3); re-verify
+# bootrom_expect = [0x18003c00]    # <- read off real silicon, do not assume
+# source = "compute .hwh MEMRANGE line <file:line>; decoder <file:line>"
+#
+# The compute die also has TWO D2D links (d2d0 @0x4000_0000, d2d1 @0x6000_0000).
+# The descriptor must say which one the J21 ribbon lands on.
+
+# -----------------------------------------------------------------------------
+# Defaults applied to every board unless the board overrides them.
+# -----------------------------------------------------------------------------
+[defaults]
+transport = "ssh-agent"
+timeout_s = 20.0

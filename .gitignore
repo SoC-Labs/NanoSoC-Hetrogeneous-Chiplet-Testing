@@ -1,0 +1,57 @@
+# Copyright 2026, SoC Labs (www.soclabs.org)
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/lib/
+dist/
+
+# Virtualenv (make venv / make deps)
+.venv/
+venv/
+
+# Everything this repo generates: logs, junit, dashboards, lease tokens.
+# NOTE this also covers build/lease.env — an fpgahub lease TOKEN is a
+# credential for the shared bench and must never be committed.
+build/
+
+# Test tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# cocotb / simulator droppings, for whatever sim/ ends up using
+sim_build/
+results.xml
+results_*.xml
+*.vcd
+*.vpd
+*.fst
+csrc/
+simv
+simv.daidir/
+ucli.key
+vc_hdrs.h
+.Xil/
+vivado*.jou
+vivado*.log
+vivado*.str
+
+# Site-specific: board addresses on a different rig, ssh proxy, passwords.
+# set_env.sh sources site.local.sh FIRST so its values win. Keeping it out of
+# git is what lets the published repo carry no internal network topology and no
+# credentials — the same split as tidelink's fpga/site.local.mk.
+site.local.sh
+hetsoc.local.toml
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
