@@ -44,11 +44,11 @@ from cocotb.triggers import ClockCycles
 from cocotb.utils import get_sim_time
 
 # Resolved from the g2_soc_pair directory, which cocotb puts on sys.path.
-from test_g2_soc_pair import (  # noqa: E402
-    APB_R8_SLOT0, APB_R8_SWI_LANE_STATUS, APB_ROLE_CFG,
-    APB_WL_LINK_ENABLE_RESET, LL_ENABLE, LL_SWRESET_OFF, LL_SWRESET_ON,
-    ROLE_CFG_MASTER_LOCK, ROLE_CFG_SLAVE_LOCK, Pair,
-)
+# The manual posture is driven through Pair's own helpers (`to_data_mode()`
+# does R8_SLOT0 + the 3-write LL bootstrap; roles go through the reset helper),
+# so the individual register constants are NOT imported here — importing them
+# would only invite a second, divergent copy of the recipe.
+from test_g2_soc_pair import APB_R8_SWI_LANE_STATUS, Pair  # noqa: E402
 
 os.environ.setdefault("COCOTB_RESOLVE_X", "ZEROS")
 

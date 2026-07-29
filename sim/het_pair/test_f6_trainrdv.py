@@ -33,7 +33,7 @@ import cocotb
 from cocotb.triggers import ClockCycles
 from cocotb.utils import get_sim_time
 
-from test_het_pair import Pair, _i
+from test_het_pair import Pair
 
 os.environ.setdefault("COCOTB_RESOLVE_X", "ZEROS")
 

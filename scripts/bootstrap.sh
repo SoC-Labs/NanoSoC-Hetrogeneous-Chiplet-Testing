@@ -114,20 +114,148 @@ fetch_submodules() {
     fi
 }
 
+# --- known-broken upstream pin: tidelink-gpio-phy ---------------------------
+# eth-chiplet's TideLink declares deps/tidelink-gpio-phy over
+#   git@github.com:SoC-Labs/TideLink-Chiplet-GPIO-PHY.git
+# and pins a commit that remote DOES NOT HAVE:
+#   fatal: remote error: upload-pack: not our ref 6ee8418...
+# The compute side declares the SAME submodule over the GitLab mirror and
+# fetches the SAME commit without complaint — the GitHub repo is behind.
+#
+# This must be repaired or the sim cannot build, and it fails in a way nobody
+# would connect to a submodule: the flists reference RTL inside it
+# (WavResetSync.v), so VCS dies LATE with
+#   Error-[CFCILFBI] Cannot find cell in liblist
+# naming a *cell*, not a missing file.
+#
+# NOTE `git submodule sync` rewrites .git/config FROM .gitmodules, so a
+# `git config submodule.<n>.url` override set before a sync is silently
+# discarded. And submodule fetches over a local path are refused outright
+# ("transport 'file' not allowed", CVE-2022-39253). So we bypass the submodule
+# machinery: clone/fetch the work tree directly, then check the pin out.
+GPIO_PHY_GITLAB="https://git.soton.ac.uk/soclabs/tidelink-gpio-phy.git"
+
+repair_gpio_phy_pin() {
+    local tl="$1" label="$2"
+    local sub="deps/tidelink-gpio-phy"
+    local path="${tl}/${sub}" sha src
+
+    [ -d "${tl}" ] || return 0
+
+    sha="$(git -C "${tl}" ls-tree HEAD "${sub}" 2>/dev/null | awk '{print $3}')"
+    [ -n "${sha}" ] || return 0
+
+    # Check the COMMIT, not merely that the directory is non-empty.
+    #
+    # The dangerous case is not an empty checkout — it is a POPULATED one at the
+    # WRONG commit. When the pinned sha is unavailable, `git submodule update`
+    # prints its fatal, leaves the clone parked on the remote's default branch
+    # (5c76e76, a *different* PHY revision), and the outer bootstrap continues.
+    # An emptiness test passes; the build then silently compiles the wrong PHY.
+    local have
+    have="$(git -C "${path}" rev-parse HEAD 2>/dev/null || true)"
+    [ "${have}" = "${sha}" ] && return 0
+
+    if [ -n "${have}" ]; then
+        warn "${label}: ${sub} is at the WRONG commit (known-broken upstream pin)"
+        warn "    want ${sha}"
+        warn "    have ${have}  <-- would build different PHY RTL"
+    else
+        warn "${label}: ${sub} is empty (known-broken upstream pin) — repairing"
+    fi
+
+    # 1) the GitLab mirror, which demonstrably carries this commit
+    # 2) a peer checkout that already has it (the other chiplet, usually)
+    # 3) an operator-supplied path
+    for src in "${GPIO_PHY_GITLAB}" \
+               "${HETSOC_COMPUTE_CHIPLET}/tidelink/${sub}" \
+               "${HETSOC_ETH_CHIPLET}/tidelink/${sub}" \
+               "${HETSOC_GPIO_PHY_SRC:-}"; do
+        [ -n "${src}" ] || continue
+        case "${src}" in "${path}") continue ;; esac          # never self
+        case "${src}" in /*) [ -d "${src}/.git" ] || [ -f "${src}/.git" ] || continue ;; esac
+
+        if [ ! -e "${path}/.git" ]; then
+            git clone --quiet "${src}" "${path}" 2>/dev/null || { rm -rf "${path}"; continue; }
+        fi
+        # --force: the pinned sha is frequently NOT on any branch of the source
+        # (that is the whole defect), so a plain refspec fetch will not bring it.
+        git -C "${path}" fetch --quiet --force "${src}" \
+            "${sha}:refs/hetsoc/gpio-phy-pin" 2>/dev/null \
+            || git -C "${path}" fetch --quiet "${src}" "${sha}" 2>/dev/null \
+            || true
+        if git -C "${path}" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+            git -C "${path}" checkout --quiet "${sha}"
+            log "${label}: ${sub} -> ${sha} (via ${src})"
+            return 0
+        fi
+    done
+
+    err "${label}: could not obtain ${sub} @ ${sha} from any source."
+    err "    Set HETSOC_GPIO_PHY_SRC to a checkout that has that commit."
+    err "    Real fix is upstream — see docs/SIM_PLAN.md §10a."
+    return 1
+}
+
+# Every nested TideLink dep the sim flists reference. Checks the COMMIT, not
+# just presence: empty gives a late, confusing VCS error, but WRONG-COMMIT gives
+# no error at all and silently builds different RTL.
+verify_tidelink_deps() {
+    local repo tl dep bad=0 want have
+    for repo in "${HETSOC_ETH_CHIPLET}" "${HETSOC_COMPUTE_CHIPLET}"; do
+        tl="${repo}/tidelink"
+        [ -d "${tl}" ] || continue
+        for dep in axi-chiplet-controller tidelink-phy tidelink-gpio-phy; do
+            [ -d "${tl}/deps/${dep}" ] || continue
+            want="$(git -C "${tl}" ls-tree HEAD "deps/${dep}" 2>/dev/null | awk '{print $3}')"
+            have="$(git -C "${tl}/deps/${dep}" rev-parse HEAD 2>/dev/null || true)"
+            if [ -z "${have}" ]; then
+                err "empty nested submodule: $(basename "${repo}")/tidelink/deps/${dep}"
+                bad=1
+            elif [ -n "${want}" ] && [ "${want}" != "${have}" ]; then
+                err "WRONG COMMIT: $(basename "${repo}")/tidelink/deps/${dep}"
+                err "    want ${want}"
+                err "    have ${have}"
+                bad=1
+            fi
+        done
+    done
+    if [ "${bad}" = "1" ]; then
+        err "The sim flists reference RTL inside these. An EMPTY dep makes VCS"
+        err "fail late with 'Cannot find cell in liblist'; a WRONG-COMMIT dep"
+        err "does not fail at all — it silently builds different RTL."
+        die "bootstrap incomplete (nested TideLink deps)"
+    fi
+    log "nested TideLink deps present and at the pinned commits on both dies"
+}
+
 fetch_submodules_full() {
     fetch_submodules
     local repo
     for repo in "${HETSOC_ETH_CHIPLET}" "${HETSOC_COMPUTE_CHIPLET}"; do
+        # NOTE: `|| warn`, deliberately. The eth chiplet's own bootstrap EXITS
+        # NON-ZERO on the known-broken tidelink-gpio-phy pin (see
+        # repair_gpio_phy_pin). Under `set -e` that would abort us here — before
+        # the repair that fixes exactly this — so the failure is downgraded to a
+        # warning and verify_tidelink_deps below is what actually gates.
         if [ -x "${repo}/scripts/bootstrap.sh" ]; then
             log "delegating full fetch to $(basename "${repo}")/scripts/bootstrap.sh"
-            "${repo}/scripts/bootstrap.sh"
+            "${repo}/scripts/bootstrap.sh" \
+                || warn "$(basename "${repo}")/scripts/bootstrap.sh exited non-zero — continuing to repair+verify"
         else
             log "recursive submodule fetch in $(basename "${repo}") (no bootstrap.sh)"
             git -C "${repo}" \
                 -c 'url.https://git.soton.ac.uk/.insteadOf=git@git.soton.ac.uk:' \
-                submodule update --init --recursive
+                submodule update --init --recursive \
+                || warn "recursive fetch in $(basename "${repo}") exited non-zero — continuing to repair+verify"
         fi
     done
+
+    # Repair the eth side AFTER the compute side has run: the compute checkout
+    # is one of the sources we can fall back to.
+    repair_gpio_phy_pin "${HETSOC_COMPUTE_CHIPLET}/tidelink" "compute-chiplet" || true
+    repair_gpio_phy_pin "${HETSOC_ETH_CHIPLET}/tidelink"     "eth-chiplet"
+    verify_tidelink_deps
 }
 
 # --- 2. python -------------------------------------------------------------
