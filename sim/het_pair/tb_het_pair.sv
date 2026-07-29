@@ -143,6 +143,31 @@ module tb_het_pair #(
     wire        e_eth_ss_0_hresp;
 
     // =====================================================================
+    // COMPUTE die stimulus — `ps_ahb_s`, the PS host backdoor.
+    //
+    // NEW as of compute-chiplet G2 (1a9ab1b / nanosoc-compute-system b0b2218):
+    // the compute top now exports an AHB slave, the `eth_ss_0` analogue, which
+    // the system description says "becomes top-matrix initiator ps_m reaching
+    // the whole compute map" (nanosoc_compute_soc.yaml:104).
+    //
+    // Before this existed, the header below said "THE COMPUTE DIE HAS NO
+    // COUNTERPART" and test_het_manual had to DEPOSIT the die's role bits
+    // hierarchically to bring the link up. It no longer does: the same recipe
+    // now goes over a real bus, through the same path silicon will use.
+    // =====================================================================
+    reg  [31:0] c_ps_ahb_s_haddr  = 32'h0;
+    reg   [1:0] c_ps_ahb_s_htrans = 2'b00;
+    reg         c_ps_ahb_s_hwrite = 1'b0;
+    reg   [2:0] c_ps_ahb_s_hsize  = 3'b010;
+    reg   [2:0] c_ps_ahb_s_hburst = 3'b000;
+    reg   [3:0] c_ps_ahb_s_hprot  = 4'h0;
+    reg  [31:0] c_ps_ahb_s_hwdata = 32'h0;
+    reg         c_ps_ahb_s_hmastlock = 1'b0;
+    wire [31:0] c_ps_ahb_s_hrdata;
+    wire        c_ps_ahb_s_hready;
+    wire        c_ps_ahb_s_hresp;
+
+    // =====================================================================
     // Ethernet die boundary observability (named so cocotb can read them and so
     // the elaborator does not warn on open outputs).
     // =====================================================================
@@ -361,6 +386,18 @@ module tb_het_pair #(
         .sys_scanenable      (1'b0),
         .sys_testmode        (1'b0),
         .sys_sysresetreq     (1'b0),
+
+        .ps_ahb_s_haddr      (c_ps_ahb_s_haddr),
+        .ps_ahb_s_htrans     (c_ps_ahb_s_htrans),
+        .ps_ahb_s_hwrite     (c_ps_ahb_s_hwrite),
+        .ps_ahb_s_hsize      (c_ps_ahb_s_hsize),
+        .ps_ahb_s_hburst     (c_ps_ahb_s_hburst),
+        .ps_ahb_s_hprot      (c_ps_ahb_s_hprot),
+        .ps_ahb_s_hwdata     (c_ps_ahb_s_hwdata),
+        .ps_ahb_s_hmastlock  (c_ps_ahb_s_hmastlock),
+        .ps_ahb_s_hrdata     (c_ps_ahb_s_hrdata),
+        .ps_ahb_s_hready     (c_ps_ahb_s_hready),
+        .ps_ahb_s_hresp      (c_ps_ahb_s_hresp),
 
         .qspi_sclk           (c_qspi_sclk),
         .qspi_csn            (c_qspi_csn),

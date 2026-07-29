@@ -49,16 +49,13 @@ from cocotb.triggers import ClockCycles
 
 from test_het_pair import (  # noqa: E402
     APERTURE_BYTE, C_INBOUND_MAILBOX, C_INBOUND_SRAM, E_INBOUND_MAILBOX,
-    NEGO_CFG_AUTONOMOUS, PAYLOAD, ROLE_CFG_MASTER_LOCK, APB_ROLE_CFG,
-    Pair, _i,
+    NEGO_CFG_AUTONOMOUS, PAYLOAD, ROLE_CFG_MASTER_LOCK, ROLE_CFG_SLAVE_LOCK,
+    APB_ROLE_CFG, Pair, _i,
 )
 
 # ROLE_CFG bit map (axi_chiplet_controller.sv:338-339):
 #   bit[0] role_cfg_reg  — 0 = master, 1 = slave
 #   bit[1] role_lock_reg — W1S, POR-only clear
-ROLE_SLAVE = 1
-ROLE_LOCK = 1
-
 FCSM_LINK_IDLE = 4
 
 
@@ -102,36 +99,64 @@ class ManualPair(Pair):
         self.log.info("calibrator early-exit: die C only (die E keeps training "
                       "so die C can lock — see _calibrator_sim_bypass docstring)")
 
-    def _force_compute_role_slave(self):
-        """Deposit the compute die's role bits — its ROLE_CFG has no bus.
-
-        A DEPOSIT, not a force: in ST_BYPASS neither the APB path nor the
-        negotiation FSM writes these registers (axi_chiplet_controller.sv:465-476
-        is the only writer and both its arms are gated off), so the value
-        persists. A hard force would also mask a regression in which something
-        *does* start driving them.
-        """
-        ctl = self.dut.u_dieC.u_tidelink_0.u_chiplet_controller
-        ctl.role_cfg_reg.value = ROLE_SLAVE
-        ctl.role_lock_reg.value = ROLE_LOCK
-        self.log.info("die C: deposited role_cfg_reg=1 (slave), role_lock_reg=1 "
-                      "[TB-side; this die has no bus — F2]")
-
     async def role_lock_manual(self, settle=200):
-        # Ethernet die over its REAL AHB port — no hierarchy games where a bus
-        # exists, so breakage in that path still shows up here.
+        """Lock both roles. Prefers the REAL bus; falls back to a deposit.
+
+        compute-chiplet G2 (1a9ab1b) re-exported `ps_ahb_s`, so die C should be
+        drivable exactly like die E. It is not, quite — see G2-GAP below — so
+        this tries the real path first and only deposits if that fails. When the
+        gap closes, this method starts using the real bus with no edit here, and
+        the WARNING below stops appearing.
+
+        ---------------------------------------------------------------------
+        G2-GAP (MEASURED 2026-07-29, test_diag_ps_ahb_s_reaches_compute)
+
+        `ps_ahb_s` works — a write/read-back to compute `shared_sram_0`
+        @0x2D002000 returns 0xa5a5beef. But every access to the D2D window
+        reads 0x00000000 and the role never latches:
+
+            0x40032080 ROLE_CFG    -> 0x00000000
+            0x40032084 ROLE_STATUS -> 0x00000000   (after writing 0x03)
+            0x40032108 SWI_LANE    -> 0x00000000
+            c_role_locked_o_0      -> 0
+
+        Cause: `ps_m`'s target list in nanosoc_compute_soc.yaml:1110 omits
+        `d2d0` and `d2d1`. `manager_m`, `compute_m` and `dma_250_0_m` all have
+        them; `ps_m` does not. So the backdoor reaches the whole INTERNAL map
+        and none of the D2D window — no TideLink APB, no CAM, no peer aperture.
+        That contradicts the same file's description at :104, "becomes top-matrix
+        initiator ps_m reaching the whole compute map".
+
+        Consequence: host-side bring-up of the compute die is impossible on
+        silicon until `d2d0`/`d2d1` are added to that list. It is a yaml change
+        in the compute repo, not something this repo can or should patch.
+        ---------------------------------------------------------------------
+        """
         await self.e.apb_write(APB_ROLE_CFG, ROLE_CFG_MASTER_LOCK)
+        await self.c.apb_write(APB_ROLE_CFG, ROLE_CFG_SLAVE_LOCK)
         await ClockCycles(self.dut.sys_fclk, settle)
-        self._force_compute_role_slave()
-        await ClockCycles(self.dut.sys_fclk, settle)
+
+        if not _i(self.dut.c_role_locked_o_0):
+            self.log.warning(
+                "die C role did NOT lock over ps_ahb_s — falling back to a "
+                "hierarchical DEPOSIT. This is the G2-GAP: ps_m cannot reach "
+                "d2d0 (nanosoc_compute_soc.yaml:1110 target list). The result "
+                "below therefore still carries the testbench-crutch caveat.")
+            ctl = self.dut.u_dieC.u_tidelink_0.u_chiplet_controller
+            ctl.role_cfg_reg.value = 1     # slave
+            ctl.role_lock_reg.value = 1    # W1S lock
+            await ClockCycles(self.dut.sys_fclk, settle)
+        else:
+            self.log.info("die C role locked over the REAL ps_ahb_s bus — "
+                          "G2-GAP is closed, no deposit needed")
 
         e_locked = _i(self.dut.e_role_locked_o)
         c_locked = _i(self.dut.c_role_locked_o_0)
         assert e_locked and c_locked, (
             f"role_locked did not assert on both dies (E={e_locked} C={c_locked}). "
-            "If E is 0 the ethernet APB write did not land; if C is 0 the deposit "
-            "did not stick — check role_lock_reg is still the name at "
-            "axi_chiplet_controller.sv:339.")
+            "If E is 0 the ethernet APB write did not land; if C is 0 BOTH the "
+            "ps_ahb_s write and the deposit fallback failed — check role_lock_reg "
+            "is still the name at axi_chiplet_controller.sv:339.")
         e_master = _i(self.dut.e_role_is_master_o)
         c_master = _i(self.dut.c_role_is_master_o_0)
         assert e_master == 1 and c_master == 0, (
@@ -357,3 +382,48 @@ async def test_diag_why_compute_cal_stalls(dut):
         dut._log.info(f"DIAG[t{i}] pad_clk_tx edges so far: E={edges['E']} C={edges['C']}")
     dut._log.info("DIAG COMPLETE — a die whose pad_clk_tx never toggles is not "
                   "transmitting, so the PEER's calibrator can never clock.")
+
+
+@cocotb.test(timeout_time=30, timeout_unit="ms")
+async def test_diag_ps_ahb_s_reaches_compute(dut):
+    """DIAG: does ps_ahb_s actually deliver into the compute SoC?
+
+    Before trusting it as the role-lock path, prove a plain read/write lands.
+    Reads a few compute-side registers over the new port and reports raw values
+    rather than asserting, so the failure mode is visible instead of binary."""
+    tb = ManualPair(dut)
+    await tb.reset()
+
+    from test_het_pair import C_TLAPB_BASE
+    probes = [
+        ("tlapb ROLE_CFG    0x2080", C_TLAPB_BASE + 0x2080),
+        ("tlapb ROLE_STATUS 0x2084", C_TLAPB_BASE + 0x2084),
+        ("tlapb SWI_LANE    0x2108", C_TLAPB_BASE + 0x2108),
+        ("compute shared_sram 0x2D001000", 0x2D001000),
+    ]
+    for name, addr in probes:
+        try:
+            v = await tb.c.read(addr)
+            dut._log.info(f"PSDIAG read  {name} @0x{addr:08x} -> 0x{v:08x}")
+        except Exception as e:
+            dut._log.info(f"PSDIAG read  {name} @0x{addr:08x} -> EXCEPTION {type(e).__name__}: {e}")
+
+    # write/read-back on scratch SRAM: proves the port masters, not just reads
+    try:
+        await tb.c.write(0x2D002000, 0xA5A5BEEF)
+        rb = await tb.c.read(0x2D002000)
+        dut._log.info(f"PSDIAG wr/rd compute SRAM 0x2D002000 -> 0x{rb:08x} "
+                      f"(expect 0xa5a5beef)")
+    except Exception as e:
+        dut._log.info(f"PSDIAG wr/rd EXCEPTION {type(e).__name__}: {e}")
+
+    # and the role write specifically
+    try:
+        await tb.c.apb_write(0x2080, 0x03)
+        await ClockCycles(dut.sys_fclk, 200)
+        st = await tb.c.apb_read(0x2084)
+        dut._log.info(f"PSDIAG after ROLE_CFG=0x03: ROLE_STATUS=0x{st:08x} "
+                      f"role_locked_o={_i(dut.c_role_locked_o_0)}")
+    except Exception as e:
+        dut._log.info(f"PSDIAG role write EXCEPTION {type(e).__name__}: {e}")
+    dut._log.info("PSDIAG COMPLETE")

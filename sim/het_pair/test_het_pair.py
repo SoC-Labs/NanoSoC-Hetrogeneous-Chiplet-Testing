@@ -70,6 +70,25 @@ CAM_BASE_OFFSET          = 0x4000
 CAM_CTRL                 = 0x4004    # bit[0] = global_enable
 CAM_RULE_0               = 0x4010    # [0]=en [15:8]=match [23:16]=replace
 
+# --- Compute die (die C) addresses — NEW with G2 -----------------------------
+# The compute top now exports `ps_ahb_s`, an AHB slave that the system
+# description turns into top-matrix initiator `ps_m` "reaching the whole compute
+# map" (nanosoc_compute_soc.yaml:104). So die C is pokeable, exactly as die E is
+# through eth_ss_0, and the TB no longer has to deposit its role bits.
+#
+# Window geometry is now a PARAMETER, not a hard-wired assumption (G4):
+# chiplet_d2d_decode is instantiated .WINDOW_BASE(32'h4000_0000) for link 0
+# (nanosoc_compute_chiplet.sv:525-526). Its region map (chiplet_d2d_decode.sv:49-67)
+# gives, with B = WINDOW_BASE top byte:
+#     peer   = (B+1)<<24                -> 0x4100_0000   <-- 0x41, NOT 0x40
+#     tlapb  =  B<<24 + 0x30000         -> 0x4003_0000
+# The long-open "0x40 or 0x41?" question is settled in RTL by that parameter.
+C_TLAPB_BASE    = 0x4003_0000        # compute link-0 TideLink APB
+C_PEER_APERTURE = 0x4100_0000        # compute link-0 peer aperture
+C_LINK1_PEER    = 0x6100_0000        # link 1 — uncabled on this bench
+
+ROLE_CFG_SLAVE_LOCK = 0x03           # bit[0]=1 slave, bit[1]=1 lock (W1S)
+
 # --- The compute die's inbound target set (nanosoc_compute_soc.yaml:1082-1100)
 # Only these two byte values are decoded by the compute SoC's D2D0_M matrix
 # port. Everything else goes to its default slave and takes a two-cycle ERROR.
@@ -152,11 +171,39 @@ class EthDie:
         return await self.read(E_TLAPB_BASE + off)
 
 
+class ComputeDie:
+    """The compute die. Pokeable since G2: an AHB master on its `ps_ahb_s` port.
+
+    Deliberately mirrors EthDie so the two dies are driven the same way. Its
+    apb_write/apb_read target the COMPUTE tlapb base (0x4003_0000), not the
+    ethernet one — the single most likely copy-paste error on this pair.
+    """
+
+    def __init__(self, dut):
+        self.dut = dut
+        self.log = dut._log
+        bus = AHBBus.from_prefix(dut, "c_ps_ahb_s")
+        self.ahb = AHBLiteMaster(bus, dut.sys_fclk, dut.c_sysresetn, timeout=50000)
+
+    async def write(self, addr, data):
+        await self.ahb.write(addr, data)
+
+    async def read(self, addr):
+        return _rd(await self.ahb.read(addr))
+
+    async def apb_write(self, off, data):
+        await self.write(C_TLAPB_BASE + off, data)
+
+    async def apb_read(self, off):
+        return await self.read(C_TLAPB_BASE + off)
+
+
 class Pair:
     def __init__(self, dut):
         self.dut = dut
         self.log = dut._log
         self.e = EthDie(dut)
+        self.c = ComputeDie(dut)
         cocotb.start_soon(_heartbeat(dut))
 
     # ------------------------------------------------------------------
