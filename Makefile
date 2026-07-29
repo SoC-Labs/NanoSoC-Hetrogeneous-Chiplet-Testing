@@ -60,7 +60,7 @@ export BOARD_A BOARD_B
 I_ACCEPT_WEDGE_RISK ?= 0
 export I_ACCEPT_WEDGE_RISK
 
-.PHONY: help deps deps-full venv lint fmt \
+.PHONY: help deps deps-full venv lint fmt test-id-map \
         test-offline test-single test-pair test-dataplane test-soak \
         sim sim-het-pair \
         preflight preflight-single preflight-pair \
@@ -108,6 +108,10 @@ lint:
 ## fmt: apply ruff format + ruff --fix to the python. Shell is reported, not rewritten.
 fmt:
 	@"$(SCRIPTS)/lint.sh" --fix
+
+## test-id-map: regenerate docs/TEST_ID_MAP.md (plan ids <-> pytest ids).
+test-id-map:
+	@"$(SCRIPTS)/py.sh" "$(SCRIPTS)/test_id_map.py"
 
 #-----------------------------------------------------------------------------
 # Test levels

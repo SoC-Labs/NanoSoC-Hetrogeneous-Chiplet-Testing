@@ -10,14 +10,28 @@ Every test, its id, what it proves, and whether it has ever run.
 > which is what [`REPO_LAYOUT.md`](REPO_LAYOUT.md)'s `tests/test_l<N>_<area>.py`
 > ↔ `L<N>-<AREA>-<NN>` rule actually prescribes.
 >
-> **The dangerous part:** `L1-PROBE-*`, `L3-LINK-*` and `L5-SOAK-*` exist in
-> *both* namespaces **with different numbering**. So an id that looks like a
-> match is a **false match** — worse than no match. Do not assume `L3-LINK-04`
-> here is `L3-LINK-04` in `tests/`.
+> **The dangerous part, now measured** (`scripts/test_id_map.py`, 2026-07-29):
+> **23 id strings exist in both namespaces, and all 23 describe different
+> tests.** The false-match rate is 100% — not one shared id means the same
+> thing. Examples:
 >
-> **Until this is reconciled**, treat matrix ids as the *planning* namespace and
-> pytest ids as the *implementation* namespace, and cross-reference by test
-> **name**, not id. Mapping:
+> | id | plan says | implementation says |
+> |---|---|---|
+> | `L1-PROBE-03` | board reachable (ssh + sudo + `/dev/mem`) | effective role matches the role deployed |
+> | `L3-LINK-05` | role asymmetry on silicon | both dies have seen CR and CRACK packets |
+> | `L3-LINK-01` | **het link comes up** | both dies converge to FCSM=4 with `cal_done=1` |
+> | `L5-SOAK-03` | bidirectional soak | no sticky fault latches during or after the soak |
+>
+> So an id that looks like a match **is** a false match. Never resolve one
+> namespace against the other; always say which you mean.
+>
+> **→ [`TEST_ID_MAP.md`](TEST_ID_MAP.md) is the authoritative cross-reference.**
+> It is generated (`make test-id-map`) and CI fails if it goes stale, so it
+> cannot silently drift the way this warning could.
+>
+> Treat matrix ids as the *planning* namespace (139 rows, a superset including
+> tests not yet written) and pytest ids as the *implementation* namespace (55
+> implemented). Area-level mapping:
 >
 > | Matrix areas | pytest area |
 > |---|---|

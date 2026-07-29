@@ -184,12 +184,35 @@ lint_make() {
     fi
 }
 
+#-----------------------------------------------------------------------------
+# 4. the plan<->implementation test-id map is current
+#
+# Gating on STALENESS, not on the divergences themselves. Every shared id is
+# currently divergent (see docs/TEST_ID_MAP.md); failing on that would just make
+# the gate permanently red and get ignored. What must not happen is the map
+# drifting out of date and someone trusting it.
+#-----------------------------------------------------------------------------
+lint_test_id_map() {
+    local py
+    py="$(hetsoc_python)"
+    if [ ! -x "${py}" ] && ! command -v "${py}" >/dev/null 2>&1; then
+        skip_row "test-id-map" "no python available"
+        return
+    fi
+    if "${py}" "${HETSOC_ROOT}/scripts/test_id_map.py" --check >/dev/null 2>&1; then
+        pass_row "test-id-map" "docs/TEST_ID_MAP.md current"
+    else
+        fail_row "test-id-map" "docs/TEST_ID_MAP.md stale — run 'make test-id-map'"
+    fi
+}
+
 hr
-log "static gate: python + shell + make"
+log "static gate: python + shell + make + test-id map"
 hr
 lint_python
 lint_shell
 lint_make
+lint_test_id_map
 
 echo
 hr
