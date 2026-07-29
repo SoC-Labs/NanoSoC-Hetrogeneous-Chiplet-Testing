@@ -254,6 +254,20 @@ ifeq ($(WAVES),1)
 COMPILE_ARGS += +define+DUMP_FSDB
 endif
 
+# Extra +define+ for posture variants. The one that matters today:
+#
+#   EXTRA_DEFINES=+define+HET_PAIR_NO_AUTONEG_PARAM
+#
+# drops the tb_het_pair.sv defparam, leaving NEGO_CFG_RESET at its shipping
+# 7'h00 => autoneg parks in ST_BYPASS => ST_TRAIN_EXIT never fires => no F6
+# swreset hold. That is the build `test_het_manual` requires (and asserts on).
+#
+# Use a SEPARATE BUILD= dir per posture. The two differ only by a define, so a
+# shared build dir silently reuses the other posture's simv — the stale-build
+# trap, which cost real time on this project already.
+EXTRA_DEFINES ?=
+COMPILE_ARGS += $(EXTRA_DEFINES)
+
 SIM_BUILD ?= $(BUILD)/sim
 
 # Keep `elab` the default so a bare `make` runs the gate, not the long cocotb run.

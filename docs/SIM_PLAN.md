@@ -661,6 +661,77 @@ the problem being solved. Build artifacts land in `sim/het_pair/build/` and
 should be gitignored (`sim/*/build/`, `sim/**/__pycache__/`,
 `sim/**/results.xml`, `sim/**/ucli.key`, `sim/**/novas.*`, `sim/**/verdi*`).
 
+## 9a. ★ THE HET DATA PLANE IS UP — manual posture  **[MEASURED 2026-07-29]**
+
+**`sim/het_pair/test_het_manual.py` reaches `FCSM E=4 C=4` and passes all three
+cross-die data-plane tests.** This is the first time the heterogeneous pair has
+come up anywhere — sim or silicon.
+
+| Test | Result | Inbound beat seen at the compute die `(addr, data, err)` |
+|---|---|---|
+| `HET-MAN-01` link → LINK_IDLE | **PASS** | FCSM E=4 C=4 at 4.40 ms |
+| `HET-MAN-02` peer write → compute SRAM | **PASS** | `0x2d001000, 0xc0ffee01, 0` |
+| `HET-MAN-03` mailbox at compute's byte | **PASS** | `0x2a000000, 0xc0ffee01, 0` |
+| `HET-MAN-04` eth's mailbox byte confined | **PASS** | `0x23000000, 0xdeadbeef, **1**` |
+
+`HET-MAN-04` is the **first inbound-confinement proof in either repo** — the only
+other DECERR test anywhere is *outbound* (`tb_tx_gate.sv`). It demonstrates the
+`0x23`-vs-`0x2A` asymmetry concretely: a CAM rule copied verbatim from the
+homogeneous pair is refused by the compute die's default slave.
+
+> ### What this does and does NOT prove
+> **Proves** the cross-die data plane and address maps: CAM translation, both
+> inbound targets, the return path, and confinement.
+> **Does not prove** the pair can bring itself up. The compute role bits are
+> *deposited by the testbench*; on silicon nothing can write them (**F2**) and
+> autoneg is broken (**F6**). Both still block the bench. Do not cite a pass
+> here as evidence the het link works.
+
+### How it gets past F6
+
+Two changes, both testbench-side, no RTL modified:
+
+1. **Disarm autoneg** (`EXTRA_DEFINES=+define+HET_PAIR_NO_AUTONEG_PARAM` drops
+   the defparam, leaving `NEGO_CFG_RESET` at its shipping `7'h00`). The
+   negotiation FSM parks in `ST_BYPASS`, `ST_TRAIN_EXIT` never fires, and the
+   swreset hold that **F6 is entirely about** never happens. Die E's `ROLE_CFG`
+   goes over its real AHB port; die C's two role bits are deposited (it has no
+   bus — F2).
+2. **Early-exit the calibrator on the SLAVE ONLY.** This one was not obvious and
+   cost a debug cycle:
+
+> **A symmetric calibrator bypass DEADLOCKS the pair.** With the shipped
+> `_calibrator_sim_bypass()` on both dies, die E locks all 8 lanes, early-exits,
+> and drops `training_mode` to 0 at ~112 µs — while die C sits at `state=2`,
+> `lane_locked=0`, `training_mode=1` **forever**. A receiver can only lock while
+> its peer is still sending training patterns, so the master finishing first
+> starves the slave. Measured by `test_diag_why_compute_cal_stalls`, which also
+> killed the obvious wrong hypothesis: both dies' `pad_clk_tx` toggle normally
+> (2400 edges each), so this is *not* a missing clock.
+
+**This corroborates the F6 attribution independently.** Same RTL, same dies, same
+build — only the bring-up posture changed, and the link came up. F6 is
+posture-specific, exactly as `docs/F6_ATTRIBUTION.md` concludes.
+
+### Reproducing
+
+```sh
+make -C sim/het_pair sim MODULE=test_het_manual \
+     BUILD=<scratch>/hetman EXTRA_DEFINES=+define+HET_PAIR_NO_AUTONEG_PARAM
+```
+
+Use a **separate `BUILD=` per posture** — the autoneg and manual builds differ
+only by a define, so a shared build dir silently reuses the wrong `simv`.
+
+### Minor defect found on the way
+
+`Pair.wait_cal_done()`'s timeout message reads `u_calibrator.cur_state`, which
+does not exist on either die — it is `state`. The diagnostic therefore always
+printed `-1`, which reads as "unresolvable/X" and sent this investigation after
+a phantom clocking problem. Worth fixing in `test_het_pair.py`.
+
+---
+
 ## 10a. Bootstrap hazards  **[VERIFIED 2026-07-29 on a clean clone]**
 
 `make deps` is deliberately shallow (see `scripts/bootstrap.sh`) — it does not
