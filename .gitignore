@@ -27,6 +27,13 @@ htmlcov/
 
 # cocotb / simulator droppings, for whatever sim/ ends up using
 sim_build/
+# Per-testbench build trees. The glob must be build* , not build/ : each
+# bring-up POSTURE gets its own dir (build/, build_manual/) because cocotb+VCS
+# key the build on the directory and NOT on +define+, so sharing one dir
+# silently reuses the other posture's simv. See sim/het_pair/Makefile 'manual'.
+sim/*/build/
+sim/*/build_*/
+sim/**/__pycache__/
 results.xml
 results_*.xml
 *.vcd

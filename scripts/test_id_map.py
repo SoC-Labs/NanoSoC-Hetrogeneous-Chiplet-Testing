@@ -39,6 +39,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MATRIX = ROOT / "docs" / "TEST_MATRIX.md"
 TESTS = ROOT / "tests"
+SIM = ROOT / "sim"
 OUT = ROOT / "docs" / "TEST_ID_MAP.md"
 
 ID_RE = re.compile(r"\bL\d-[A-Z]+-\d+\b")
@@ -50,6 +51,26 @@ DOC_RE = re.compile(r'"""\s*(L\d-[A-Z]+-\d+)\s*:\s*(.+?)\s*$')
 # Two descriptions of the same test rarely match word-for-word. Below this
 # similarity we treat a shared id as a genuine collision rather than a rename.
 SIMILARITY_FLOOR = 0.45
+
+# HUMAN-VERIFIED SAME. The similarity heuristic cannot tell a terse plan name
+# ("eth -> compute SRAM") from a verbose implementation summary ("an eth-die
+# peer write reaches the COMPUTE die's shared_sram_0") — they score low and get
+# flagged as divergent. A divergence list with false positives stops being read,
+# which defeats the point, so deliberate mappings are declared here.
+#
+# ONLY add an id after reading BOTH the matrix row and the test and confirming
+# they are the same test. This table is the one place a wrong entry can hide a
+# real collision, so it is kept short and auditable.
+CONFIRMED_SAME = {
+    # The heterogeneous-pair cocotb suite, mapped onto the L0-SIM rows the plan
+    # had already specified for exactly these cases (docs/SIM_PLAN.md 9a).
+    "L0-SIM-02",  # het link bring-up            <- manual-posture link to FCSM=4
+    "L0-SIM-03",  # eth -> compute SRAM          <- peer write lands in compute SRAM
+    "L0-SIM-05",  # eth -> compute mailbox       <- mailbox at compute's 0x2A
+    "L0-SIM-07",  # CAM-off identity control     <- aperture byte arrives untranslated
+    "L0-SIM-08",  # inbound confinement DECERR   <- eth's 0x23 refused by compute
+    "L0-SIM-10",  # multi-word burst             <- 8 consecutive words intact
+}
 
 
 def collect_matrix():
@@ -63,9 +84,15 @@ def collect_matrix():
 
 
 def collect_pytest():
-    """{id: (summary, relpath)} for ids that OWN a test docstring."""
+    """{id: (summary, relpath)} for ids that OWN a test docstring.
+
+    Scans `sim/` as well as `tests/`: the heterogeneous-pair cocotb tests carry
+    matrix ids too (the L0-SIM area), and leaving them out made a whole level
+    look unimplemented when it is not.
+    """
     out = {}
-    for path in sorted(TESTS.rglob("test_*.py")):
+    roots = [d for d in (TESTS, SIM) if d.is_dir()]
+    for path in sorted(q for d in roots for q in d.rglob("test_*.py")):
         for line in path.read_text().splitlines():
             m = DOC_RE.search(line.strip())
             if m and m.group(1) not in out:
@@ -79,7 +106,9 @@ def similarity(a, b):
 
 def render(matrix, code):
     shared = sorted(set(matrix) & set(code))
-    divergent = [i for i in shared if similarity(matrix[i], code[i][0]) < SIMILARITY_FLOOR]
+    divergent = [i for i in shared
+                 if i not in CONFIRMED_SAME
+                 and similarity(matrix[i], code[i][0]) < SIMILARITY_FLOOR]
     agreeing = [i for i in shared if i not in divergent]
     plan_only = sorted(set(matrix) - set(code))
     code_only = sorted(set(code) - set(matrix))
@@ -120,15 +149,17 @@ def render(matrix, code):
         a("None. 🎉")
     a("")
 
-    a("## Plausibly the same test")
+    a("## Same test in both namespaces")
     a("")
-    a("Shared ids whose descriptions are similar enough to be the same intent.")
-    a("Still verify before relying on a plan status for an implemented test.")
+    a("Shared ids that are the same test — either scored similar enough, or")
+    a("listed in `CONFIRMED_SAME` in the generator after a human read both.")
+    a(f"({len(CONFIRMED_SAME & set(shared))} are human-confirmed, marked ✓.)")
     a("")
     a("| id | plan says | implementation says | file |")
     a("|---|---|---|---|")
     for i in agreeing:
-        a(f"| `{i}` | {matrix[i]} | {code[i][0]} | [{code[i][1]}](../{code[i][1]}) |")
+        mark = " ✓" if i in CONFIRMED_SAME else ""
+        a(f"| `{i}`{mark} | {matrix[i]} | {code[i][0]} | [{code[i][1]}](../{code[i][1]}) |")
     a("")
 
     a("## Planned, not implemented")
@@ -186,7 +217,8 @@ def main():
 
     OUT.write_text(new)
     shared = set(matrix) & set(code)
-    div = [i for i in sorted(shared) if similarity(matrix[i], code[i][0]) < SIMILARITY_FLOOR]
+    div = [i for i in sorted(shared) if i not in CONFIRMED_SAME
+           and similarity(matrix[i], code[i][0]) < SIMILARITY_FLOOR]
     print("wrote %s — %d plan, %d implemented, %d shared, %d DIVERGENT"
           % (OUT.relative_to(ROOT), len(matrix), len(code), len(shared), len(div)))
     for i in div:

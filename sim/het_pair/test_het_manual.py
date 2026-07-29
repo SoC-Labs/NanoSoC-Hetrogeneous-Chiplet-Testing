@@ -155,7 +155,7 @@ class ManualPair(Pair):
 
 @cocotb.test(timeout_time=90, timeout_unit="ms")
 async def test_manual_posture_link_reaches_link_idle(dut):
-    """HET-MAN-01: the het pair reaches FCSM=4 when role-locked manually.
+    """L0-SIM-02: the het pair reaches FCSM=4 when role-locked manually.
 
     The load-bearing test. If this passes, F6 is confirmed posture-specific and
     every data-plane test below becomes runnable."""
@@ -167,7 +167,7 @@ async def test_manual_posture_link_reaches_link_idle(dut):
 
 @cocotb.test(timeout_time=90, timeout_unit="ms")
 async def test_manual_peer_write_eth_to_compute_sram(dut):
-    """HET-MAN-02: an eth-die peer write reaches the COMPUTE die's shared_sram_0.
+    """L0-SIM-03: an eth-die peer write reaches the COMPUTE die's shared_sram_0.
 
     CAM 0x2F -> 0x2D — the one inbound byte both designs agree on. The first
     genuinely heterogeneous cross-die transfer, address AND data."""
@@ -202,7 +202,7 @@ async def test_manual_peer_write_eth_to_compute_sram(dut):
 
 @cocotb.test(timeout_time=90, timeout_unit="ms")
 async def test_manual_mailbox_uses_compute_byte(dut):
-    """HET-MAN-03: the mailbox is reachable at the COMPUTE die's byte, 0x2A.
+    """L0-SIM-05: the mailbox is reachable at the COMPUTE die's byte, 0x2A.
 
     The defining heterogeneous asymmetry. The eth die's own mailbox is 0x23; the
     compute die moved it to 0x2A because 0x22-0x23 is its Cortex-M4 bit-band
@@ -229,7 +229,7 @@ async def test_manual_mailbox_uses_compute_byte(dut):
 
 @cocotb.test(timeout_time=90, timeout_unit="ms")
 async def test_manual_eth_mailbox_byte_is_confined_on_compute(dut):
-    """HET-MAN-04: the ETH mailbox byte (0x23) must be REFUSED by the compute die.
+    """L0-SIM-08: the ETH mailbox byte (0x23) must be REFUSED by the compute die.
 
     Inbound confinement — untested anywhere in either repo until now. The only
     DECERR test that exists is outbound (`tb_tx_gate.sv`). 0x23 is not in the
@@ -256,6 +256,64 @@ async def test_manual_eth_mailbox_byte_is_confined_on_compute(dut):
         f"confinement is broken. beats={tb.fmt_beats()}")
     dut._log.info(f"CONFINED: 0x{E_INBOUND_MAILBOX:02X} refused by the compute "
                   "default slave, as required")
+
+
+@cocotb.test(timeout_time=90, timeout_unit="ms")
+async def test_manual_cam_disabled_is_identity(dut):
+    """L0-SIM-07: with the CAM off, the aperture byte must arrive UNTRANSLATED.
+
+    The control for L0-SIM-03/05. Without it those tests only show that 0x2D
+    arrived — not that the CAM is what put it there. If this fails, the
+    translated byte in every other test came from somewhere else and the whole
+    address-map story is wrong."""
+    tb = ManualPair(dut)
+    await tb.bring_up_manual()
+    tb.assert_link_idle()
+    cocotb.start_soon(tb.catch_compute_inbound())
+
+    await tb.program_eth_cam(APERTURE_BYTE, C_INBOUND_SRAM, enable=False)
+    peer_addr = (APERTURE_BYTE << 24) | 0x003000
+    await tb.e.write(peer_addr, PAYLOAD ^ 0xFFFF)
+    await ClockCycles(dut.sys_fclk, 4000)
+
+    inbound = tb.observe_compute_inbound()
+    dut._log.info(f"compute inbound beats = {tb.fmt_beats()}")
+    assert (inbound >> 24) == APERTURE_BYTE, (
+        f"CAM disabled, but the compute die inbound saw 0x{inbound:08x} — "
+        f"expected the identity map (upper byte 0x{APERTURE_BYTE:02x}). The "
+        "translated byte in the other tests did NOT come from the CAM.")
+    dut._log.info(f"CONTROL ok: CAM off -> inbound 0x{inbound:08x} (identity)")
+
+
+@cocotb.test(timeout_time=90, timeout_unit="ms")
+async def test_manual_peer_sequence_eth_to_compute(dut):
+    """L0-SIM-10: 8 consecutive words cross the aperture intact.
+
+    Catches cross-beat corruption a single access cannot: a write-data delay
+    misaligning beat N with N+1, or a read pipe-offset that fails to re-arm.
+    This is what a memcpy across the peer aperture actually does."""
+    tb = ManualPair(dut)
+    await tb.bring_up_manual()
+    tb.assert_link_idle()
+
+    await tb.program_eth_cam(APERTURE_BYTE, C_INBOUND_SRAM, enable=True)
+    base = (APERTURE_BYTE << 24) | 0x002000
+    seq = [(base + 4 * i, 0x5EED0000 + (i << 4) + i) for i in range(8)]
+
+    for addr, val in seq:
+        await tb.e.write(addr, val)
+    await ClockCycles(dut.sys_fclk, 4000)
+
+    bad = []
+    for addr, val in seq:
+        rb = await tb.e.read(addr)
+        if rb != val:
+            bad.append((addr, val, rb))
+    assert not bad, (
+        "sequence corrupted across the heterogeneous aperture: "
+        + ", ".join(f"0x{a:08x} wrote 0x{w:08x} read 0x{r:08x}" for a, w, r in bad))
+    dut._log.info(f"SEQ ok: {len(seq)} words intact across the het aperture")
+
 
 
 @cocotb.test(timeout_time=40, timeout_unit="ms")

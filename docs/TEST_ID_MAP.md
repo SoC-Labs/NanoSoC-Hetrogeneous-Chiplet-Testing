@@ -12,10 +12,10 @@ independent: **an id shared by both is not necessarily the same test.**
 | | count |
 |---|---:|
 | plan ids (matrix rows) | 139 |
-| implemented ids (pytest) | 55 |
-| shared id strings | 23 |
+| implemented ids (pytest) | 61 |
+| shared id strings | 29 |
 | — of which **divergent** ⚠️ | **23** |
-| — of which plausibly the same | 0 |
+| — of which plausibly the same | 6 |
 
 ## ⚠️ Divergent — same id, different test
 
@@ -48,17 +48,24 @@ Never resolve one against the other. Cite the namespace explicitly.
 | `L5-SOAK-03` | bidirectional soak | no sticky fault latches during or after the soak | [tests/test_l5_soak.py](../tests/test_l5_soak.py) |
 | `L5-SOAK-04` | mailbox soak | no CRC growth and no stalled Ack/Nack FIFO on the AXI data | [tests/test_l5_soak.py](../tests/test_l5_soak.py) |
 
-## Plausibly the same test
+## Same test in both namespaces
 
-Shared ids whose descriptions are similar enough to be the same intent.
-Still verify before relying on a plan status for an implemented test.
+Shared ids that are the same test — either scored similar enough, or
+listed in `CONFIRMED_SAME` in the generator after a human read both.
+(6 are human-confirmed, marked ✓.)
 
 | id | plan says | implementation says | file |
 |---|---|---|---|
+| `L0-SIM-02` ✓ | het link bring-up | the het pair reaches FCSM=4 when role-locked manually | [sim/het_pair/test_het_manual.py](../sim/het_pair/test_het_manual.py) |
+| `L0-SIM-03` ✓ | eth → compute SRAM | an eth-die peer write reaches the COMPUTE die's shared_sram_0 | [sim/het_pair/test_het_manual.py](../sim/het_pair/test_het_manual.py) |
+| `L0-SIM-05` ✓ | eth → compute mailbox | the mailbox is reachable at the COMPUTE die's byte, 0x2A | [sim/het_pair/test_het_manual.py](../sim/het_pair/test_het_manual.py) |
+| `L0-SIM-07` ✓ | CAM-off identity control | with the CAM off, the aperture byte must arrive UNTRANSLATED | [sim/het_pair/test_het_manual.py](../sim/het_pair/test_het_manual.py) |
+| `L0-SIM-08` ✓ | inbound confinement DECERR | the ETH mailbox byte (0x23) must be REFUSED by the compute die | [sim/het_pair/test_het_manual.py](../sim/het_pair/test_het_manual.py) |
+| `L0-SIM-10` ✓ | multi-word burst | 8 consecutive words cross the aperture intact | [sim/het_pair/test_het_manual.py](../sim/het_pair/test_het_manual.py) |
 
 ## Planned, not implemented
 
-116 matrix ids have no pytest test of that id. Expected —
+110 matrix ids have no pytest test of that id. Expected —
 the matrix covers levels and blocked items that are not yet written.
 
 | id | plan says |
@@ -76,15 +83,9 @@ the matrix covers levels and blocked items that are not yet written.
 | `L0-SAFE-03` | peer write refused when link down |
 | `L0-SAFE-04` | imports with no hardware |
 | `L0-SIM-01` | het pair elaborates |
-| `L0-SIM-02` | het link bring-up |
-| `L0-SIM-03` | eth → compute SRAM |
 | `L0-SIM-04` | compute → eth SRAM |
-| `L0-SIM-05` | eth → compute mailbox |
 | `L0-SIM-06` | compute → eth mailbox |
-| `L0-SIM-07` | CAM-off identity control |
-| `L0-SIM-08` | inbound confinement DECERR |
 | `L0-SIM-09` | read round-trip both ways |
-| `L0-SIM-10` | multi-word burst |
 | `L0-SIM-11` | mailbox IRQ source latches |
 | `L0-SIM-12` | `d2d_irq` → NVIC wiring |
 | `L0-SIM-13` | TX-aperture wedge gate |

@@ -277,5 +277,23 @@ SIM_BUILD ?= $(BUILD)/sim
 
 sim: | libmap
 
+# ---------------------------------------------------------------------------
+# manual: the MANUAL-POSTURE data-plane suite — the one that actually passes.
+#
+# Recursive $(MAKE) with its own BUILD is deliberate. This posture differs from
+# the default only by a +define+, and cocotb/VCS key their build on the
+# directory, NOT the defines — so sharing $(BUILD) silently reuses the autoneg
+# simv and the run reports the F6 stall from the wrong binary. A separate dir is
+# the only thing that makes the two reproducible side by side.
+#
+# See docs/SIM_PLAN.md 9a. Scope: proves the DATA PLANE, not autonomous bring-up.
+# ---------------------------------------------------------------------------
+.PHONY: manual
+manual:
+	@$(MAKE) --no-print-directory sim \
+	    MODULE=test_het_manual \
+	    BUILD="$(BUILD)_manual" \
+	    EXTRA_DEFINES=+define+HET_PAIR_NO_AUTONEG_PARAM
+
 clean::
-	rm -rf "$(BUILD)" __pycache__ results.xml ucli.key novas.* verdi*
+	rm -rf "$(BUILD)" "$(BUILD)_manual" __pycache__ results.xml ucli.key novas.* verdi*

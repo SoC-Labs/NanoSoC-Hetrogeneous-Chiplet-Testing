@@ -11,9 +11,11 @@ Every test, its id, what it proves, and whether it has ever run.
 > ↔ `L<N>-<AREA>-<NN>` rule actually prescribes.
 >
 > **The dangerous part, now measured** (`scripts/test_id_map.py`, 2026-07-29):
-> **23 id strings exist in both namespaces, and all 23 describe different
-> tests.** The false-match rate is 100% — not one shared id means the same
-> thing. Examples:
+> **29 id strings exist in both namespaces. 23 of them describe different
+> tests.** The other 6 (`L0-SIM-02/03/05/07/08/10`) ARE the same test — the
+> heterogeneous sim suite was deliberately written onto the rows the plan had
+> already specified, and they are listed in the generator's `CONFIRMED_SAME`
+> table. Everything else that looks like a match is a false match. Examples:
 >
 > | id | plan says | implementation says |
 > |---|---|---|
@@ -30,8 +32,8 @@ Every test, its id, what it proves, and whether it has ever run.
 > cannot silently drift the way this warning could.
 >
 > Treat matrix ids as the *planning* namespace (139 rows, a superset including
-> tests not yet written) and pytest ids as the *implementation* namespace (55
-> implemented). Area-level mapping:
+> tests not yet written) and pytest ids as the *implementation* namespace (61
+> implemented, `tests/` + `sim/`). Area-level mapping:
 >
 > | Matrix areas | pytest area |
 > |---|---|
@@ -47,9 +49,6 @@ Every test, its id, what it proves, and whether it has ever run.
 > arguably right to file the firmware-blocked items under L4 and
 > `tests/test_l6_future.py` should fold into L4/L5 — a rename, not a rewrite.
 > Deferred to whoever owns the next pass rather than churned unilaterally.
-
-Read with [`ARCHITECTURE.md`](ARCHITECTURE.md) (address facts, DUT asymmetries)
-and [`VERIFICATION_PLAN.md`](VERIFICATION_PLAN.md) (strategy, milestones, risk).
 
 Read with [`ARCHITECTURE.md`](ARCHITECTURE.md) (address facts, DUT asymmetries)
 and [`VERIFICATION_PLAN.md`](VERIFICATION_PLAN.md) (strategy, milestones, risk).
@@ -70,12 +69,15 @@ id with the row struck through in the "Retired" section.
 | `FLAKY-HOM` | Runs on the homogeneous pair but **intermittently wedges the board** (`RISK-1`). Attended only. |
 | `FAILED-HOM` | Has been run on the homogeneous pair and **did not pass**. |
 | `PROVEN-SIM` | Passes in a committed cocotb/VCS env in one of the source repos. The env is named. |
+| **`PROVEN-SIM-HET`** | Passes in **this repo's heterogeneous pair sim** (`sim/het_pair`, `make sim-het-manual`) — two DIFFERENT chiplet tops, real RTL both sides. The strongest pre-silicon evidence available. Caveat: the manual posture deposits the compute die's role bits testbench-side to step over **F6**, so this proves the data plane, **not** autonomous bring-up. |
 | `PLANNED` | No blocker except writing it. |
 | `BLOCKED-<gap>` | Cannot run until a named gap closes. |
 
-> **Nothing in this matrix has ever run on the heterogeneous pair.** Every
-> `PROVEN-*` tag is evidence that the *mechanism* works, not that the *het pair*
-> works.
+> **Nothing in this matrix has ever run on heterogeneous SILICON**, and only
+> the six `PROVEN-SIM-HET` rows have run on the heterogeneous pair at all
+> (in simulation, 2026-07-29 — see [`SIM_PLAN.md` §9a](SIM_PLAN.md)). Every
+> other `PROVEN-*` tag is evidence that the *mechanism* works, not that the
+> *het pair* works.
 
 **Gap ids** (full definitions in [`VERIFICATION_PLAN.md` §7](VERIFICATION_PLAN.md)):
 `G-FPGA` no compute KR260 port · `G-WEDGE` recovery-stripped AXI FCSMs ·
@@ -136,15 +138,15 @@ it costs (it is real editing, not a parameter flip).
 | ID | Name | Proves | Method | Prereq | Pass criteria | Wedge | CI | Status |
 |---|---|---|---|---|---|---|---|---|
 | `L0-SIM-01` | het pair elaborates | two **different** tops instantiate and connect | VCS elab of `tb_het_pair.sv`: eth top + compute top, pads crossed via `pad_skid` with `pad_en` gating, I²C wired-AND | both repos' flists merged | 0 elaboration errors | none | yes | BLOCKED-G-TB |
-| `L0-SIM-02` | het link bring-up | the proven recipe works across two designs | **per-die** `TLAPB_BASE`; eth `ROLE_CFG(0x2E032080)=0x02`, compute `ROLE_CFG(0x40032080)=0x03` `[DERIVED]`; poll `cal_done`; `SWI_TRAINING_MODE=0`; `WL_LINK_ENABLE_RESET` ← `0x00027F08`, `0x00027F00`, `0x00027F07` | `L0-SIM-01` | both dies `fcsm==4`, `cal_done==1`; die B `cr_seen & crack_seen` | none | yes | BLOCKED-G-TB |
-| `L0-SIM-03` | eth → compute SRAM | forward data plane, het | eth CAM `0x2F→0x2D`; write `0x2F001000` = `0xC0FFEE01` | `L0-SIM-02` | compute `shared_sram_0[0x2D001000] == 0xC0FFEE01`; inbound `haddr[31:24]==0x2D` | none | yes | BLOCKED-G-TB |
+| `L0-SIM-02` | het link bring-up | the proven recipe works across two designs | **per-die** `TLAPB_BASE`; eth `ROLE_CFG(0x2E032080)=0x02`, compute `ROLE_CFG(0x40032080)=0x03` `[DERIVED]`; poll `cal_done`; `SWI_TRAINING_MODE=0`; `WL_LINK_ENABLE_RESET` ← `0x00027F08`, `0x00027F00`, `0x00027F07` | `L0-SIM-01` | both dies `fcsm==4`, `cal_done==1`; die B `cr_seen & crack_seen` | none | yes | **PROVEN-SIM-HET** |
+| `L0-SIM-03` | eth → compute SRAM | forward data plane, het | eth CAM `0x2F→0x2D`; write `0x2F001000` = `0xC0FFEE01` | `L0-SIM-02` | compute `shared_sram_0[0x2D001000] == 0xC0FFEE01`; inbound `haddr[31:24]==0x2D` | none | yes | **PROVEN-SIM-HET** |
 | `L0-SIM-04` | compute → eth SRAM | **slave→master direction** — never tested in any sim | compute CAM `0x41→0x2D` `[DERIVED]`; write `0x41001000` | `L0-SIM-02` | eth `shared_sram_0[0x2D001000]` matches | none | yes | BLOCKED-G-TB |
-| `L0-SIM-05` | eth → compute mailbox | the **`0x2A`** replace byte, not `0x23` | eth CAM `0x2F→0x2A`; 4 words + `SLOT0_CTRL=MSG_VALID` | `L0-SIM-02` | compute `ipc_mailbox_0` `0x2A00_0000..+0x0C` + `MSG_VALID` | none | yes | BLOCKED-G-TB |
+| `L0-SIM-05` | eth → compute mailbox | the **`0x2A`** replace byte, not `0x23` | eth CAM `0x2F→0x2A`; 4 words + `SLOT0_CTRL=MSG_VALID` | `L0-SIM-02` | compute `ipc_mailbox_0` `0x2A00_0000..+0x0C` + `MSG_VALID` | none | yes | **PROVEN-SIM-HET** |
 | `L0-SIM-06` | compute → eth mailbox | the `0x23` replace byte, reverse | compute CAM `0x41→0x23` | `L0-SIM-02` | eth `ipc_mailbox_0` `0x2300_0000..+0x0C` + `MSG_VALID` | none | yes | BLOCKED-G-TB |
-| `L0-SIM-07` | CAM-off identity control | `0x2D` really came from the CAM | `CAM_CTRL=0`; repeat `L0-SIM-03` at a distinct offset | `L0-SIM-03` | far die sees the untranslated upper byte (`0x2F` / `0x41`) | none | yes | BLOCKED-G-TB |
-| `L0-SIM-08` | inbound confinement DECERR | the security boundary, both directions | CAM replace = an **excluded** byte (`0x2C`, `0x2A` on the eth die, `0x21`) | `L0-SIM-02` | far-die matrix DECERRs; no wedge; excluded region unchanged | none | yes | BLOCKED-G-TB |
+| `L0-SIM-07` | CAM-off identity control | `0x2D` really came from the CAM | `CAM_CTRL=0`; repeat `L0-SIM-03` at a distinct offset | `L0-SIM-03` | far die sees the untranslated upper byte (`0x2F` / `0x41`) | none | yes | **PROVEN-SIM-HET** |
+| `L0-SIM-08` | inbound confinement DECERR | the security boundary, both directions | CAM replace = an **excluded** byte (`0x2C`, `0x2A` on the eth die, `0x21`) | `L0-SIM-02` | far-die matrix DECERRs; no wedge; excluded region unchanged | none | yes | **PROVEN-SIM-HET** |
 | `L0-SIM-09` | read round-trip both ways | the fragile read-return path | read back `0x2F001000` / `0x41001000` over the link | `L0-SIM-03/04` | payload returns, `hresp==0` | none | yes | BLOCKED-G-TB |
-| `L0-SIM-10` | multi-word burst | cross-beat off-by-one one beat cannot catch | 8 words `+0x1000..0x101C`, values `0x5EED0000+(i<<4)+i` | `L0-SIM-03` | all 8 land in order | none | yes | BLOCKED-G-TB |
+| `L0-SIM-10` | multi-word burst | cross-beat off-by-one one beat cannot catch | 8 words `+0x1000..0x101C`, values `0x5EED0000+(i<<4)+i` | `L0-SIM-03` | all 8 land in order | none | yes | **PROVEN-SIM-HET** |
 | `L0-SIM-11` | mailbox IRQ source latches | the cross-die interrupt *source* | after `L0-SIM-05`, read far-die mailbox `+0x028` | `L0-SIM-05` | `IRQ_STATUS[0]==1` | none | yes | BLOCKED-G-TB |
 | `L0-SIM-12` | `d2d_irq` → NVIC wiring | the two dies' NVIC maps differ as documented | drive each source; probe both vectors | `L0-SIM-01` | eth `[7:0]`→CPU0 IRQ[17:10], `[15:8]`→CPU1 IRQ[16:9]; compute `[7:0]`→**M4** NVIC[1..8], `[15:8]`→**M0+** NVIC[13..20] | none | yes | BLOCKED-G-TB |
 | `L0-SIM-13` | TX-aperture wedge gate | link-down TX access faults instead of hanging | port `verif/chiplet_d2d_decode/tb_tx_gate.sv` to **both** window bases | none | `hsel_tx==0` when `link_active=0`; clean 2-cycle AHB ERROR; `hsel_tlapb` **still** selectable (bring-up must work with the link down) | none | yes | PROVEN-SIM (`verif/chiplet_d2d_decode`, eth window only) |

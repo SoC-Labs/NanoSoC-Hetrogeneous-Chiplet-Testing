@@ -37,10 +37,22 @@ SIM_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
 # Forwarded to the per-testbench Makefiles. Exported rather than passed
 # positionally so a caller can set them in the environment too.
+#
+# They MUST be given a value here. A bare `export VAR` on an undefined variable
+# exports it as EMPTY, and an empty-but-exported variable still counts as "set",
+# so it beats het_pair/Makefile's own `?=` default. The child then preflights
+# with a blank path and reports
+#     het_pair: SKIP — chiplet checkout missing:
+# with nothing after the colon. That broke every target routed through this
+# dispatcher (`make sim`, `make sim-het-pair`, `make sim-het-manual`) while
+# running `make -C sim/het_pair` directly worked fine — which is a confusing
+# way to lose an afternoon.
+ETH_CHIPLET_HOME     ?= $(abspath $(SIM_DIR)/../deps/eth-chiplet)
+COMPUTE_CHIPLET_HOME ?= $(abspath $(SIM_DIR)/../deps/compute-chiplet)
 export ETH_CHIPLET_HOME
 export COMPUTE_CHIPLET_HOME
 
-.PHONY: all het-pair sim clean
+.PHONY: all het-pair sim manual clean
 
 all: het-pair
 
@@ -48,9 +60,16 @@ all: het-pair
 het-pair:
 	@$(MAKE) -C "$(SIM_DIR)/het_pair" elab
 
-## sim: the cocotb heterogeneous test. Long-running; attended use.
+## sim: the cocotb heterogeneous test, DEFAULT (autoneg) posture. Long-running.
+##      Expect 1 PASS / 6 FAIL until F6 is fixed — see docs/F6_ATTRIBUTION.md.
 sim:
 	@$(MAKE) -C "$(SIM_DIR)/het_pair" sim
+
+## manual: the MANUAL-posture cross-die data-plane suite — the one that passes.
+##         Steps over F6 testbench-side to verify the data plane and address
+##         maps. Does NOT prove autonomous bring-up. See docs/SIM_PLAN.md 9a.
+manual:
+	@$(MAKE) -C "$(SIM_DIR)/het_pair" manual
 
 clean:
 	@$(MAKE) -C "$(SIM_DIR)/het_pair" clean

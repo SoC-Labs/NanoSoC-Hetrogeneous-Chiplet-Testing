@@ -62,7 +62,7 @@ export I_ACCEPT_WEDGE_RISK
 
 .PHONY: help deps deps-full venv lint fmt test-id-map \
         test-offline test-single test-pair test-dataplane test-soak \
-        sim sim-het-pair \
+        sim sim-het-pair sim-het-manual \
         preflight preflight-single preflight-pair \
         deploy-pair bench-status bench-bringup bench-recover regress \
         lease release junit dashboard clean distclean
@@ -158,6 +158,17 @@ sim:
 	    exit 0
 	fi
 	$(MAKE) -C "$(HETSOC_ROOT)/sim"
+
+## sim-het-manual: het pair, MANUAL bring-up posture — the cross-die data-plane
+##                 suite that passes today. Steps over F6 testbench-side; proves
+##                 the data plane and address maps, NOT autonomous bring-up.
+##                 See docs/SIM_PLAN.md 9a.
+sim-het-manual:
+	@if [ ! -f "$(HETSOC_ROOT)/sim/Makefile" ]; then
+	    echo "sim-het-manual: no sim/Makefile yet — the sim area has not landed. Skipping."
+	    exit 0
+	fi
+	$(MAKE) -C "$(HETSOC_ROOT)/sim" manual
 
 ## sim-het-pair: back-to-back eth+compute RTL pair sim (skips cleanly if absent).
 sim-het-pair:
