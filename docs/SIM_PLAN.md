@@ -503,6 +503,31 @@ this as a hard rule.
 
 ### F6 — where it actually stops: FCSM stalls at state 1
 
+> **SUPERSEDED 2026-07-29 — see `docs/F6_ATTRIBUTION.md` and
+> `docs/TIDELINK_HANDOVER.md`.** F6 is now attributed: **TideLink-side**, and two
+> claims below are measurably wrong.
+>
+> 1. **It is not a heterogeneous-pair finding.** It reproduces exactly on the
+>    *homogeneous* `verif/g2_soc_pair` bench — two identical `nanosoc_eth_chiplet`
+>    dies on the same TideLink commit — as soon as the bring-up posture is
+>    switched from manual `ROLE_CFG` to autonomous `NEGO_CFG = 0x61`. The
+>    discriminating variable is the **posture**, not heterogeneity. Manual
+>    posture reaches FCSM 4 in ~90 µs; autonomous does not. Cross-revision
+>    interop (`3ed78fe` vs `3f3de09`) is therefore eliminated, and the
+>    "force both dies onto one revision" experiment proposed below is unnecessary.
+> 2. **The FCSM does not stall at 1.** State 1 is a transient during training.
+>    Autonomous training *completes* at 3800 µs (`ST_TRAIN_DONE`, `train_ok = 1`,
+>    all 8 peer lanes locked), and its final software reset drops both dies'
+>    FCSMs to **0**, where they stay. The measured stuck signals are
+>    `io_tx_reset` / `io_rx_reset` / `io_app_reset` on
+>    `…u_wlink.tl2wl.wlink_tidelinktl`, held at 1 on **both** dies from 3800.6 µs
+>    to 8600.6 µs while `io_app_enable = 1` and `u_autoneg.swreset_hold_r = 0`.
+>    The suite's 2.585 ms sample is taken mid-training, 1.2 ms too early.
+>
+> The prime suspect below — `tidelink_top` hard-coding `apb_debug_unlock_i` /
+> `mask_hs_bypass_i` — is **eliminated**: it is identical in the working and the
+> failing configurations.
+
 **This is the current blocker and it is unresolved.** With autonomous
 negotiation armed, the pair reliably reaches:
 
