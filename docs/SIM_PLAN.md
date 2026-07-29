@@ -556,9 +556,31 @@ The remaining data-plane tests
 (`test_peer_write_eth_to_compute`, `test_peer_sequence_eth_to_compute`,
 `test_ipc_mailbox_eth_to_compute`, `test_cam_disabled_is_identity`,
 `test_inbound_confinement_negative`) are written and correct-by-construction
-against the maps in §6 but had not been run to completion when this document was
-written. They are the immediate next step and need no new infrastructure — the
-elaboration, the harness and the bring-up path are all proven.
+against the maps in §6. They need no new infrastructure — the elaboration, the
+harness and the bring-up path are all proven.
+
+**Full-suite run, measured 2026-07-29** (clean checkout, VCS T-2022.06-SP2):
+
+| Test | Status | Sim time (ns) | Real (s) |
+|---|---|---:|---:|
+| `test_smoke_harness` | **PASS** | 84,510 | 1.1 |
+| `test_het_link_brings_up` | FAIL | 2,585,440 | 43.0 |
+| `test_peer_write_eth_to_compute` | FAIL | 2,585,440 | 43.1 |
+| `test_peer_sequence_eth_to_compute` | FAIL | 2,585,440 | 43.9 |
+| `test_ipc_mailbox_eth_to_compute` | FAIL | 2,585,440 | 45.6 |
+| `test_cam_disabled_is_identity` | FAIL | 2,585,440 | 46.7 |
+| `test_inbound_confinement_negative` | FAIL | 2,585,440 | 45.0 |
+| **TESTS=7** | **PASS=1 FAIL=6** | 15,597,150 | **268.4** |
+
+**All six failures are F6 and nothing else.** Every data-plane test fails with
+`AssertionError: link layer never came up` at an *identical* sim time — they gate
+on FCSM=4 before touching the aperture, so none of their own logic has executed
+yet. Closing F6 is expected to convert all six in one step; until then these
+results say nothing about the address maps in §6.
+
+> **Cost note:** each link-gated test spends ~45 s of wall clock reaching the
+> same timeout. Only `test_smoke_harness` (1.1 s) is usable as a fast harness
+> check while F6 is open.
 
 ---
 
