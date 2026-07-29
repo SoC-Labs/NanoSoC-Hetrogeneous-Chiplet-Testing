@@ -146,8 +146,22 @@ flists: check-tools
 	source "$(COMPUTE_CHIPLET_HOME)/nanosoc-compute-system/set_env.sh" >/dev/null && \
 	source "$(COMPUTE_CHIPLET_HOME)/tidelink/set_env.sh" >/dev/null && \
 	export SOCLABS_NANOSOC_SOC_DIR="$(COMPUTE_CHIPLET_HOME)/nanosoc-compute-system/build/compute_soc" && \
-	if [ ! -f "$${SOCLABS_NANOSOC_SOC_DIR}/compute_soc.flist" ]; then \
+	cmp_yaml="$(COMPUTE_CHIPLET_HOME)/nanosoc-compute-system/sys_desc/nanosoc_compute_soc.yaml"; \
+	cmp_flist="$${SOCLABS_NANOSOC_SOC_DIR}/compute_soc.flist"; \
+	regen=0; \
+	if [ ! -f "$${cmp_flist}" ]; then regen=1; \
+	elif [ -f "$${cmp_yaml}" ] && [ "$${cmp_yaml}" -nt "$${cmp_flist}" ]; then \
+	    regen=1; \
+	    echo "== compute sys_desc is NEWER than the generated SoC — regenerating =="; \
+	    echo "   (a presence-only check here shipped a STALE nanosoc_compute_soc.sv"; \
+	    echo "    after the G2 bump: the chiplet top instantiated ps_ahb_s_* that the"; \
+	    echo "    cached generated SoC did not declare, and VCS failed with"; \
+	    echo "    Error-[UPIMI-E] Undefined port — 10 of them, pointing at the RTL"; \
+	    echo "    rather than at the stale artifact.)"; \
+	fi; \
+	if [ "$${regen}" = "1" ]; then \
 	    echo "== generating compute SoC into $${SOCLABS_NANOSOC_SOC_DIR} =="; \
+	    rm -rf "$${SOCLABS_NANOSOC_SOC_DIR}"; \
 	    ( cd "$(COMPUTE_CHIPLET_HOME)/nanosoc-compute-system" && source ./set_env.sh && \
 	      bash compute-subsystem/sim/gen_compute_soc.sh "$${SOCLABS_NANOSOC_SOC_DIR}" ); \
 	fi && \
