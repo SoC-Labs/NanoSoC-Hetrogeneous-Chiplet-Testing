@@ -732,6 +732,59 @@ a phantom clocking problem. Worth fixing in `test_het_pair.py`.
 
 ---
 
+## 9b. compute → eth: why it is blocked, and on WHAT  **[INVESTIGATED 2026-07-29]**
+
+Every cross-die test in §9a runs **eth → compute**. The reverse direction
+(`L0-SIM-04` SRAM, `L0-SIM-06` mailbox) is untested — and TideLink's own harness
+flags **slave→master as the harder direction**, so leaving it filed as "not got
+to yet" would misrepresent the coverage. It was investigated; here is the
+evidence and the correct blocker.
+
+### It is NOT an RTL gap — the outbound path exists and is routed
+
+| Question | Answer | Source |
+|---|---|---|
+| Does the compute die have an outbound D2D initiator? | **Yes** — `d2d0_ahb_m`, `0x4000_0000..0x4FFF_FFFF` (256 MB) | `nanosoc_compute_soc.yaml:125`, region `:1017` |
+| Which internal masters can reach it? | **Three**: `manager_m` (M0+), `compute_m` (M4), `dma_250_0_m` | `:1026-1064` target lists |
+| Which cannot? | `dap_m` (debug) — deliberately excluded | `:1064` |
+| Can firmware program the compute CAM? | **Yes** — the same `d2d0` window carries the config aperture through the byte-identical `chiplet_d2d_decode` (`haddr[24]`: even = TX/config, odd = peer) | decoder is byte-identical between repos (§2) |
+
+So a peer write **compute → eth** is architecturally supported: firmware on the
+M0+ manager programs the CAM at the compute-side config aperture, then writes
+`0x41......`, which lands in the eth die's `0x2D` or `0x23`.
+
+### It IS blocked — on FIRMWARE (`G-FW`), not on the testbench (`G-TB`)
+
+Nothing on the compute die is *running*. Both boot cores halt on an
+unprogrammed QSPI flash (`tb_het_pair.sv:499` — "Per-die QSPI flash models
+(unprogrammed)"), which is deliberate: it keeps both buses quiet.
+
+The mechanism to fix that is already present — the flash model supports
+`$readmemh(<path>.I0.memory, <file>)` (`SST26VF064B.v:16`) and the compute SoC
+generation already emits a `flash.bin`. What does not exist is **firmware that
+performs a peer write**. That is a real task (C source, Cortex-M toolchain, boot
+image, releasing the core from its gate), and it is the **same work silicon
+needs** — which is why it belongs to `G-FW` and not to this testbench.
+
+### What would NOT be acceptable
+
+Driving the compute die's internal AHB master hierarchically, the way §9a
+deposits two role bits. Those are two configuration flops with no other driver.
+Synthesising a full AHB master transaction onto internal nets — fighting the
+real drivers, inventing arbitration — would be simulating something that is not
+the design, and a pass would mean nothing. The line is: *step over a known
+bring-up defect, never fabricate the behaviour under test.*
+
+### Consequence for the coverage claim
+
+**§9a proves the eth→compute direction only.** The return path *is* exercised
+within it (`L0-SIM-03` reads its payload back over the link), so the read-return
+direction is not wholly untested — but a compute-**initiated** transfer is, and
+that is the direction TideLink warns about. `L0-SIM-04` and `L0-SIM-06` are
+retagged `BLOCKED-G-FW`.
+
+---
+
 ## 10a. Bootstrap hazards  **[VERIFIED 2026-07-29 on a clean clone]**
 
 `make deps` is deliberately shallow (see `scripts/bootstrap.sh`) — it does not
