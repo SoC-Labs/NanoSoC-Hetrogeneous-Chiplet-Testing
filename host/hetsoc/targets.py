@@ -161,6 +161,19 @@ class Target:
     bootrom_soc_base: Optional[int] = None
     bootrom_expect: Tuple[int, ...] = ()
     apertures: Tuple[Tuple[str, int, int, int], ...] = ()
+    #: Extra D2D links on a MULTI-link die. The compute chiplet exposes TWO
+    #: TideLinks; the eth and bare-link designs have one and leave this empty.
+    #: The scalar fields above (``tlapb_base``, ``tidechart_base``,
+    #: ``peer_aperture``) describe LINK 0 — the ribbon default and the only link
+    #: carrying a TideChart — and this table is the full per-link map, including
+    #: the second link the eth die does not have. Each row is
+    #: ``(name, d2d_window_base, d2d_window_size, tlapb_base, tidechart_base,
+    #: peer_aperture)`` with ``tidechart_base`` None where the link has no
+    #: TideChart. A link's CAM (address-translator) bank is
+    #: ``tlapb_base + regs.ADDRXLAT_BANK``; its peer aperture is the
+    #: ``haddr[24]==1`` half of the D2D window. SoC-internal only — never a
+    #: host address; ``to_host()`` is unchanged.
+    d2d_links: Tuple[Tuple[str, int, int, int, Optional[int], int], ...] = ()
     provisional: bool = False
     provisional_reason: str = ""
     deploy_action: Optional[str] = None    # fpgahub action name, if any
@@ -457,6 +470,14 @@ class Target:
                          % self.peer_aperture)
         else:
             lines.append("  peer window : none")
+        if self.d2d_links:
+            lines.append("  d2d links   :")
+            for n, wb, ws, tb, tc, pa in self.d2d_links:
+                lines.append(
+                    "    %-6s D2D 0x%08X (%d MB)  tlapb 0x%08X  peer 0x%02X  %s"
+                    % (n, wb, ws >> 20, tb, pa,
+                       "tidechart 0x%08X" % tc if tc is not None
+                       else "(no tidechart)"))
         if self.inbound_targets:
             lines.append("  inbound     : %s"
                          % ", ".join("%s @0x%02X" % (k, v)
@@ -547,7 +568,14 @@ _BARE_LINK = Target(
 #
 # The SoC-INTERNAL map below IS carried, because it never reaches /dev/mem on
 # its own and because the heterogeneous pair needs it: the far-die inbound
-# bytes are what the *eth* die's CAM must be programmed with.
+# bytes are what the *eth* die's CAM must be programmed with. As of G4/G5/G7
+# that map is now fully populated — per-link TideLink/TideChart bases
+# (0x4003/0x6003, 0x4004), the dual D2D windows (0x4000_0000 / 0x6000_0000), and
+# the peer apertures (0x41 / 0x61) — so this die can also ORIGINATE cross-die
+# CAM rules (compute->eth). The peer values are the post-G4 INTENDED map (the
+# decoder implies them; the compute sims still use 0x40 with the decoder
+# bypassed — see the TODO(G4) on peer_aperture). None of it enables to_host():
+# the window stays unresolved until G2 lands a real bitstream/.hwh.
 #
 #   >>> THE HETEROGENEITY THAT WILL BITE <<<
 #   ipc_mailbox_0 is at 0x2A on the compute die and 0x23 on the eth die.
@@ -560,57 +588,96 @@ _BARE_LINK = Target(
 # -----------------------------------------------------------------------------
 _COMPUTE_CHIPLET = Target(
     name="kr260-compute-chiplet",
-    window_base=0,
+    # PS BACKDOOR WINDOW — PENDING G2 (docs/BRINGUP_GAPS.md §G2, HARD STOP, in
+    # progress). Compute has no PS-backdoor port yet: no eth_ss_0 analogue, no
+    # bitstream, no .hwh. This base is the PLANNED MIRROR of the eth backdoor
+    # (eth lands at PS phys 0x4_0000_0000 + HADDR, tidelink.hwh:4112) — an
+    # HPM0_FPD high aperture the compute port is expected to match. It is
+    # recorded, not invented, but window_size STAYS 0 so `resolved` is False and
+    # to_host() fails loud on EVERY address. Do NOT set window_size here: the
+    # base must be CONFIRMED against the built .hwh once the G2 backdoor lands,
+    # and the only sanctioned way to resolve it is a cited hetsoc.toml override
+    # (target_from_dict enforces a non-TBD `source`).
+    window_base=0x4_0000_0000,      # PLANNED mirror of eth; pending G2 .hwh
     window_size=0,                  # 0 == unresolved -> to_host() fails loud
-    # FOUND, cited: nanosoc-compute-system/sys_desc/nanosoc_compute_soc.yaml
-    # :1008 shared_sram_0 base 0x2D000000; :989 ipc_mailbox_0 base 0x2A000000.
-    # Corroborated by the generated compute_config_pkg.sv:31,47 and by the
-    # generated interconnect address map, where d2d0_m / d2d1_m each reach
-    # exactly these two targets — the same "exactly two inbound" property the
-    # eth die has.
+    # FOUND, cited: nanosoc_compute_soc.yaml:1008 shared_sram_0 @0x2D000000;
+    # :989 ipc_mailbox_0 @0x2A000000. d2d0_m / d2d1_m each reach EXACTLY these
+    # two (:1091-1100) — the same "exactly two inbound" property the eth die has;
+    # __post_init__ confines the descriptor to them (everything else DECERRs on
+    # the far side's top-level default slave).
     inbound_targets={INBOUND_SHARED_SRAM: 0x2D, INBOUND_IPC_MAILBOX: 0x2A},
-    # TBD — DELIBERATELY NOT SET. The repo contradicts itself: docs/STATUS.md:31
-    # and both G2 tests use 0x40 (CAM match=0x40, RULE_0=0x002D4001), but those
-    # testbenches bypass chiplet_d2d_decode entirely (tb_pair.sv:30-33,
-    # tb_soc_pair.sv:163-164 say so), and in that decoder `a_peer = haddr[24]`,
-    # which puts the real peer window at 0x41 / 0x61, not 0x40 / 0x60. No file
-    # in the repo states 0x41. Until someone reconciles the decoder against the
-    # tests, this framework refuses to emit a peer address for this die.
-    peer_aperture=NO_PEER_APERTURE,
+    # PEER APERTURE — LINK 0, post-G4 INTENDED value (docs/BRINGUP_GAPS.md §G4).
+    # chiplet_d2d_decode.sv splits the D2D window on haddr[24]; the peer window
+    # is the haddr[24]==1 half, so d2d0 @0x4000_0000 -> peer 0x41 (and d2d1
+    # @0x6000_0000 -> 0x61, see d2d_links). SoC-internal only: is_peer/peer/
+    # cam_rule_for use it to classify addresses and build CAM rule WORDS, none of
+    # which reach /dev/mem — and to_host() stays fail-loud until G2 — so an
+    # unconfirmed value here cannot wedge a board.
+    #   TODO(G4): compute mainline still uses 0x40 (both G2 sims: CAM match=0x40,
+    #   RULE_0=0x002D4001) but those testbenches BYPASS chiplet_d2d_decode
+    #   (tb_soc_pair.sv:163-164), so they cannot see the haddr[24] split. G4 is
+    #   moving the firmware/CAM 0x40 -> 0x41; 0x41 is encoded here as the intended
+    #   post-decoder value. Confirm 0x41/0x61 with the decoder IN PATH on a real
+    #   build before trusting a cross-die transfer.
+    peer_aperture=0x41,
     kind="chiplet",
-    # DERIVED, not stated anywhere: d2d0 window 0x4000_0000 (yaml:1017) +
-    # chiplet_d2d_decode blk==0x3 -> tlapb. Harmless while the target is
-    # unresolved (no host address can be produced at all); re-verify against a
-    # real bitstream before trusting it.
-    tlapb_base=0x40030000,
-    tidechart_base=0x40040000,
-    bootrom_soc_base=None,
+    # LINK 0 config plane (docs/BRINGUP_GAPS.md §G5). 0x2E is mgr_remap_0 (a live
+    # peripheral) on this die — NOT a TideLink window; do not reuse eth's 0x2E03.
+    tlapb_base=0x40030000,          # link 0 TideLink APB (CAM bank +0x4000)
+    tidechart_base=0x40040000,      # link 0 TideChart (link 0 ONLY)
+    # Dual-link map. Link 1 mirrors link 0 at +0x2000_0000 and has NO TideChart
+    # (tied off, nanosoc_compute_chiplet.sv:656-658). Which link the J21 ribbon
+    # lands on is a bench decision; link 0 is the default (it carries TideChart).
+    d2d_links=(
+        # name,   d2d window,  size(256MB), tlapb,       tidechart,   peer
+        ("link0", 0x4000_0000, 0x1000_0000, 0x4003_0000, 0x4004_0000, 0x41),
+        ("link1", 0x6000_0000, 0x1000_0000, 0x6003_0000, None,        0x61),
+    ),
+    bootrom_soc_base=None,          # no verified boot-ROM signature (no bitstream)
     bootrom_expect=(),
     roles=("die_a", "die_b"),
-    provisional=True,
+    provisional=True,               # window unresolved until G2 -> still provisional
     provisional_reason=(
-        "the NanoSoC Compute Chiplet has NO FPGA/KR260 port — no bitstream, no "
-        ".hwh, and no external AHB pad group on the chip boundary at all, so "
-        "there is no PS-visible backdoor window base to declare. It also has TWO "
-        "D2D links (d2d0 @0x4000_0000, d2d1 @0x6000_0000, 256 MB each), so even "
-        "once a port exists the descriptor must say WHICH link the ribbon uses"),
+        "the NanoSoC Compute Chiplet has NO FPGA/KR260 port yet (G1/G2, HARD "
+        "STOP): no bitstream, no .hwh, and no external AHB pad group on the chip "
+        "boundary, so the PS-backdoor window base cannot be CONFIRMED. window_base "
+        "here is the PLANNED mirror of eth's 0x4_0000_0000 aperture; window_size "
+        "stays 0 so to_host() refuses every address until the built .hwh confirms "
+        "the base (resolve via a cited hetsoc.toml override). The SoC-internal map "
+        "(inbound bytes, per-link TideLink/TideChart bases, the 0x41/0x61 peer "
+        "apertures) IS carried — it never reaches /dev/mem — but 0x41/0x61 is the "
+        "post-G4 INTENDED value, not yet verified with the decoder in path. It "
+        "also has TWO D2D links, so a bench must say WHICH link the ribbon uses"),
     source=("NanoSoC-Compute-Chiplet: nanosoc-compute-system/sys_desc/"
-            "nanosoc_compute_soc.yaml:989,1008,1017,1018 (inbound + D2D windows); "
-            "src/rtl/nanosoc_compute_chiplet.sv:498,525,665 (2x chiplet_d2d_decode, "
-            "2x tidelink_top), :554,585,626 (APB bridge widths); "
-            "src/rtl/chiplet_d2d_decode.sv:112-140 (sub-decode). "
-            "WINDOW BASE: none exists — TBD"),
-    notes=("TBD (all would need a real bitstream): window_base, window_size, "
-           "peer_aperture, boot-ROM signature, and which of the two D2D links "
-           "the J21 ribbon lands on.\n"
-           "HETEROGENEITY: ipc_mailbox_0 is 0x2A here vs 0x23 on the eth die; "
-           "shared_sram_0 is 0x2D on both. Cross-die CAM rules must take the "
-           "replace byte from the RECEIVING die's descriptor.\n"
+            "nanosoc_compute_soc.yaml:989,1008,1017,1018,1091-1100 (inbound + D2D "
+            "windows); src/rtl/nanosoc_compute_chiplet.sv:498,525,665 (2x "
+            "chiplet_d2d_decode, 2x tidelink_top), :656-658 (link-1 TideChart tied "
+            "off); src/rtl/chiplet_d2d_decode.sv:41-49,113-114,138 (haddr[24] "
+            "split -> peer 0x41/0x61). docs/BRINGUP_GAPS.md §G4 (peer aperture), "
+            "§G5 (APB base), §G7 (mailbox 0x2A). "
+            "WINDOW BASE: pending G2 — planned mirror of eth 0x4_0000_0000, TBD "
+            "until confirmed against the built .hwh"),
+    notes=("PENDING BITSTREAM (G2): window_base is the planned eth mirror, "
+           "window_size=0, so to_host() fails loud; boot-ROM signature unknown.\n"
+           "PER-DIRECTION CAM (G7) — the CAM rewrites addr[31:24] on the SENDER "
+           "to the RECEIVER's byte, so rules are directional. shared_sram agrees "
+           "(0x2D) both ways; the mailbox does NOT (0x2A compute vs 0x23 eth, "
+           "because 0x22-0x23 is compute's Cortex-M4 SRAM bit-band alias, "
+           "nanosoc_compute_soc.yaml:989):\n"
+           "    eth->compute : sram cam_rule(0x2F,0x2D)=0x002D2F01 ; "
+           "mailbox cam_rule(0x2F,0x2A)=0x002A2F01\n"
+           "    compute->eth : sram cam_rule(0x41,0x2D)=0x002D4101 ; "
+           "mailbox cam_rule(0x41,0x23)=0x00234101\n"
+           "  Build every rule with cam_rule_for(which, far_target=<receiver>); "
+           "it takes the replace byte from the RECEIVER. Applying the eth habit "
+           "(replace 0x23) to a COMPUTE receiver is INVALID: 0x23 is not in "
+           "compute's inbound set {0x2D,0x2A} -> DECERR, and inbound_byte refuses "
+           "it structurally (no compute region maps to 0x23).\n"
+           "DUAL LINK: link 0 @0x4000_0000 carries the TideChart and is the "
+           "ribbon default; link 1 @0x6000_0000 has none. peer 0x41 / 0x61 are "
+           "the haddr[24]==1 halves (see d2d_links).\n"
            "0x2E is mgr_remap_0 (a live peripheral) on this die, NOT a TideLink "
-           "config window — do not reuse the eth die's 0x2E03_0000.\n"
-           "Link 1 has no TideChart behind its 0x_04 block (tied off, "
-           "nanosoc_compute_chiplet.sv:656-658); the single shared TideChart is "
-           "reachable through link 0 only."),
+           "config window — do not reuse the eth die's 0x2E03_0000."),
 )
 
 TARGETS: Dict[str, Target] = {
@@ -700,6 +767,7 @@ def target_from_dict(name: str, spec: Mapping, base: Optional[Target] = None) ->
             bootrom_soc_base=base.bootrom_soc_base,
             bootrom_expect=tuple(base.bootrom_expect),
             apertures=tuple(base.apertures),
+            d2d_links=tuple(base.d2d_links),
             provisional=base.provisional,
             provisional_reason=base.provisional_reason,
             deploy_action=base.deploy_action, roles=tuple(base.roles),

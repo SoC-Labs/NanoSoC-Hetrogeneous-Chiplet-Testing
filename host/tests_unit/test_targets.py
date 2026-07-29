@@ -286,10 +286,21 @@ class TestHeterogeneousPairAddressing:
         # aims the write at a region the compute die does not decode.
         assert eth.cam_rule_for("ipc_mailbox", far_target=compute) == 0x002A2F01
 
-    def test_the_compute_die_cannot_originate_a_cross_die_access_yet(self):
-        with pytest.raises(AddressGuardError) as info:
-            get_target(COMPUTE).cam_rule_for("shared_sram")
-        assert "no peer aperture" in str(info.value)
+    def test_the_compute_die_originates_receiver_keyed_cross_die_rules(self):
+        # Post-G4 the compute die has a peer aperture (0x41), so it can now
+        # ORIGINATE cross-die rules. Per G7 the replace byte is the RECEIVER's
+        # (eth's) map: mailbox 0x23, shared_sram 0x2D — so compute->eth is
+        # cam_rule(0x41, ...).
+        compute = get_target(COMPUTE)
+        eth = get_target(ETH)
+        assert compute.cam_rule_for("ipc_mailbox", far_target=eth) == 0x00234101
+        assert compute.cam_rule_for("shared_sram", far_target=eth) == 0x002D4101
+        # The eth-habit rule (replace 0x23) is INVALID at a COMPUTE receiver:
+        # 0x23 is not in compute's inbound set, so no cam_rule_for(...) aimed at
+        # compute can ever produce a 0x??->0x23 rule (it would DECERR).
+        assert 0x23 not in compute.inbound_targets.values()
+        for which in ("shared_sram", "ipc_mailbox"):
+            assert compute.inbound_byte(which) != 0x23
 
 
 # =============================================================================
@@ -323,9 +334,16 @@ class TestProvisionalComputeTarget:
         # and the heterogeneous pair needs the far-die inbound bytes.
         assert target.inbound_targets == {"shared_sram": 0x2D, "ipc_mailbox": 0x2A}
 
-    def test_it_declares_no_peer_aperture_because_the_repo_contradicts_itself(
-            self, target):
-        assert target.peer_aperture == NO_PEER_APERTURE
+    def test_it_declares_the_post_g4_link0_peer_aperture(self, target):
+        # Post-G4 (docs/BRINGUP_GAPS.md §G4): compute's D2D window is
+        # 0x4000_0000, so haddr[24]==1 -> peer 0x41 (link 0) / 0x61 (link 1).
+        # Encoded as the post-decoder INTENDED value; it is SoC-internal only,
+        # and to_host() stays fail-loud until G2 (see the provisional tests
+        # above), so an unconfirmed value cannot wedge a board.
+        assert target.peer_aperture == 0x41
+        assert target.peer_aperture % 2 == 1        # the odd (peer) half
+        link_peers = {row[0]: row[5] for row in target.d2d_links}
+        assert link_peers == {"link0": 0x41, "link1": 0x61}
 
     def test_it_declares_no_bootrom_probe(self, target):
         assert target.bootrom_soc_base is None

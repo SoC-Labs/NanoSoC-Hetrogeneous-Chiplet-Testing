@@ -590,12 +590,24 @@ def test_l0_addr_17_no_chiplet_declares_the_tx_aperture_as_its_peer_window():
 
     compute = TARGETS.get("kr260-compute-chiplet")
     if compute is not None:
-        assert compute.peer_aperture == NO_PEER_APERTURE, (
-            "the compute chiplet now declares peer aperture 0x%02X. Nothing in "
-            "either repo states the post-decoder value: its sims use 0x40 with "
-            "chiplet_d2d_decode bypassed, and the decoder itself implies 0x41. "
-            "If this has been resolved against a real bitstream, update this "
-            "test with the citation." % compute.peer_aperture)
+        # Post-G4 (docs/BRINGUP_GAPS.md §G4): the compute D2D window is
+        # 0x4000_0000, so haddr[24]==1 puts its peer aperture at 0x41 (link 0) /
+        # 0x61 (link 1) — the ODD upper byte, NOT the 0x40/0x60 TX half the two
+        # compute G2 sims poke with chiplet_d2d_decode bypassed. Encoded as the
+        # post-decoder INTENDED value (SoC-internal only; to_host() stays
+        # fail-loud until G2 lands a real bitstream). Confirm 0x41/0x61 with the
+        # decoder in path before trusting a cross-die transfer.
+        assert compute.peer_aperture == 0x41, (
+            "the compute chiplet's link-0 peer aperture should be 0x41, the "
+            "haddr[24]==1 half of its 0x4000_0000 D2D window (G4); got 0x%02X"
+            % compute.peer_aperture)
+        assert compute.peer_aperture % 2 == 1, (
+            "the peer aperture must be the odd half of the D2D window, never the "
+            "even (TX-aperture) half that wedges")
+        link_peers = {row[0]: row[5] for row in compute.d2d_links}
+        assert link_peers == {"link0": 0x41, "link1": 0x61}, (
+            "compute is dual-link: link 0 -> peer 0x41, link 1 -> peer 0x61; "
+            "got %r" % link_peers)
 
 
 # ===========================================================================
