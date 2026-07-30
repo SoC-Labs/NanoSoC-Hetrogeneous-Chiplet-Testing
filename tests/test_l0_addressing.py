@@ -736,16 +736,22 @@ def test_l0_addr_21_second_source_aperture_reaches_sram_and_mailbox_concurrently
 
     A single 16 MB peer aperture rewrites to exactly one far-die region, so the
     SRAM data plane and the mailbox doorbell would otherwise contend for one
-    aperture. The fix (spec §6.2) is a second source byte (0x42/0x62) with its
+    aperture. The fix (spec §6.2) is a second source byte (0x44/0x64) with its
     own CAM rule: SRAM stays on aperture #1 (0x41/0x61 -> 0x2D) while the mailbox
-    rides aperture #2 (0x42/0x62 -> the receiver's mailbox byte).
+    rides aperture #2 (0x44/0x64 -> the receiver's mailbox byte). The mailbox is
+    0x44 not 0x42 because 0x42000000-0x43FFFFFF is the Cortex-M4 PERIPHERAL
+    bit-band alias (BB_PRESENT=1): an M4 store there is intercepted by the core
+    and never reaches the bus. The decoder keeps a CONTIGUOUS run
+    (NUM_PEER_BYTES=4 -> 0x41..0x44, 0x61..0x64); 0x42/0x43 (0x62/0x63) are
+    decoded-as-peer but dead (no CAM rule; the M4 can't drive them).
 
     is_peer() is the safety gate that forces a peer access onto the FCSM==4
-    link-up check; it MUST admit the mailbox byte, or a doorbell on a down link
-    escapes the gate and hangs the PS bus (H2). 0x43/0x63 must still be refused,
-    the anti-alias boundary having moved up exactly one byte.
-    Pass: both apertures on both links classify as peer; the mailbox CAM rule is
-    receiver-keyed off match 0x42; SRAM is unchanged; 0x43 is not a peer byte.
+    link-up check; it MUST admit the WHOLE run, or an access to a dead byte on a
+    down link escapes the gate and hangs the PS bus (H2). The anti-alias boundary
+    moved to 0x45/0x65, so those are still refused.
+    Pass: the whole run 0x41..0x44 / 0x61..0x64 classifies as peer; the mailbox
+    CAM rule is receiver-keyed off match 0x44; SRAM is unchanged; 0x45 is above
+    the run and not a peer byte.
     """
     compute = TARGETS.get("kr260-compute-chiplet")
     eth = TARGETS.get("kr260-eth-chiplet")
@@ -756,26 +762,29 @@ def test_l0_addr_21_second_source_aperture_reaches_sram_and_mailbox_concurrently
     link_peer = {row[0]: row[5] for row in compute.d2d_links}
     link_mbox = {row[0]: row[6] for row in compute.d2d_links}
     assert link_peer == {"link0": 0x41, "link1": 0x61}
-    assert link_mbox == {"link0": 0x42, "link1": 0x62}
-    assert compute.peer_aperture == 0x41 and compute.peer_aperture_mbox == 0x42
+    assert link_mbox == {"link0": 0x44, "link1": 0x64}
+    assert compute.peer_aperture == 0x41 and compute.peer_aperture_mbox == 0x44
 
-    # is_peer admits BOTH apertures on BOTH links; 0x43/0x63 still fault.
-    for addr in (0x4100_1000, 0x4200_0020, 0x6100_1000, 0x6200_0020):
+    # is_peer admits the WHOLE contiguous run on BOTH links (0x41..0x44 /
+    # 0x61..0x64), INCLUDING the dead bytes 0x42/0x43; only 0x45/0x65 (above the
+    # run) still fault.
+    for addr in (0x4100_1000, 0x4200_0000, 0x4300_0000, 0x4400_0020,
+                 0x6100_1000, 0x6200_0000, 0x6300_0000, 0x6400_0020):
         assert compute.is_peer(addr), (
-            "is_peer(0x%08X) must be True — it is a peer aperture and a doorbell "
-            "there must be gated on link-up" % addr)
-    for addr in (0x4300_0000, 0x6300_0000):
+            "is_peer(0x%08X) must be True — it is inside the peer run and an "
+            "access there must be gated on link-up" % addr)
+    for addr in (0x4500_0000, 0x6500_0000):
         assert not compute.is_peer(addr), (
-            "0x%08X is not a peer aperture; the decoder still faults it "
+            "0x%08X is above the peer run; the decoder still faults it "
             "(anti-alias). is_peer must not gate it as a peer access." % addr)
 
     # peer() forms the right source address per region.
-    assert compute.peer(0x20, which=INBOUND_IPC_MAILBOX) == 0x4200_0020
+    assert compute.peer(0x20, which=INBOUND_IPC_MAILBOX) == 0x4400_0020
     assert compute.peer(0x1000) == 0x4100_1000        # default -> aperture #1
 
-    # The mailbox CAM rule is receiver-keyed off match 0x42; SRAM off 0x41.
-    assert compute.cam_rule_for(INBOUND_IPC_MAILBOX, far_target=compute) == 0x002A4201
-    assert compute.cam_rule_for(INBOUND_IPC_MAILBOX, far_target=eth) == 0x00234201
+    # The mailbox CAM rule is receiver-keyed off match 0x44; SRAM off 0x41.
+    assert compute.cam_rule_for(INBOUND_IPC_MAILBOX, far_target=compute) == 0x002A4401
+    assert compute.cam_rule_for(INBOUND_IPC_MAILBOX, far_target=eth) == 0x00234401
     assert compute.cam_rule_for(INBOUND_SHARED_SRAM, far_target=eth) == 0x002D4101
 
     # The eth die keeps ONE aperture (its second aperture is deferred, §9): its

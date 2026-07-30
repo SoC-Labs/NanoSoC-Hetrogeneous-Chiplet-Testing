@@ -148,7 +148,7 @@ class Target:
             ``NO_PEER_APERTURE`` for a design with no peer window. This is
             aperture #1 — the SRAM/default source byte.
         peer_aperture_mbox: the SECOND source aperture (spec §6.2) — a distinct
-            local address byte (0x42 on the compute die, link 0) that the CAM
+            local address byte (0x44 on the compute die, link 0) that the CAM
             rewrites to the far-die ``ipc_mailbox`` while aperture #1 reaches
             far-die ``shared_sram`` CONCURRENTLY. ``NO_PEER_APERTURE`` means the
             die has no second aperture (the eth die: its mailbox rule still
@@ -163,8 +163,10 @@ class Target:
     #: SECOND SOURCE APERTURE (spec §6.2). One 16 MB peer aperture routes to
     #: exactly one far-die 16 MB region, so reaching far SRAM (via
     #: ``peer_aperture``) AND far mailbox at the same time needs a second source
-    #: byte + a second CAM rule. LINK-0 value (0x42; link 1's 0x62 lives in
+    #: byte + a second CAM rule. LINK-0 value (0x44; link 1's 0x64 lives in
     #: ``d2d_links``). ``NO_PEER_APERTURE`` == no second aperture on this die.
+    #: NOTE 0x44, not 0x42: 0x42/0x43 is the M4 peripheral bit-band alias (SoC
+    #: BB_PRESENT=1), unreachable from the M4, so the mailbox sits at 0x44.
     peer_aperture_mbox: int = NO_PEER_APERTURE
 
     # --- extensions (additive; the contract fields above are unchanged) ------
@@ -426,31 +428,53 @@ class Target:
 
     def _peer_byte_set(self) -> frozenset:
         """EVERY outbound peer (D2D) source byte on this die — across all links
-        and BOTH apertures. ``is_peer`` gates on the whole set: if the mailbox
-        aperture (0x42) were not recognised as peer, a doorbell on a down link
-        would escape the FCSM==4 link-up gate and hang the PS bus (H2). Derived
-        from the per-region map + ``d2d_links`` rather than a single hardcoded
-        byte, so link 1 (0x61/0x62) is covered too."""
+        and the WHOLE CONTIGUOUS peer run (SRAM aperture #1 through the mailbox
+        aperture #2, INCLUSIVE of the dead intermediate bytes).
+
+        ``is_peer`` gates on the whole run because the decoder does: the RTL
+        (chiplet_d2d_decode) runs NUM_PEER_BYTES=4, so the entire run 0x41..0x44
+        (0x61..0x64 on link 1) decodes to hsel_peer -> ahb_sub. Only 0x41 (SRAM)
+        and 0x44 (mailbox) carry a CAM rule; 0x42/0x43 (0x62/0x63) are DEAD — the
+        M4 cannot drive them (0x42000000-0x43FFFFFF is its peripheral bit-band
+        alias) and no CAM rule maps them. But they MUST still classify as peer: a
+        stray 0x42/0x43 access on a DOWN link that escaped the FCSM==4 link-up
+        gate would forward to ahb_sub and hang the PS bus — exactly the H2 hazard
+        the gate exists to prevent. So the set is the inclusive range
+        [peer_aperture .. peer_aperture_mbox] per link, NOT just the two used
+        bytes. Derived from the per-region map + ``d2d_links`` so link 1 is
+        covered too. A die with one aperture (eth) contributes just its 0x2F."""
         bytes_: set = set()
-        for b in (self.peer_aperture, self.peer_aperture_mbox):
-            if b != NO_PEER_APERTURE:
-                bytes_.add(b & 0xFF)
+
+        def _add_run(lo, hi) -> None:
+            if lo is None or lo == NO_PEER_APERTURE:
+                return                          # no aperture #1 -> no run at all
+            lo &= 0xFF
+            if hi is None or hi == NO_PEER_APERTURE:
+                hi = lo                         # single aperture (eth): just 0x2F
+            else:
+                hi &= 0xFF
+            if hi < lo:
+                lo, hi = hi, lo
+            bytes_.update(range(lo, hi + 1))    # INCLUSIVE contiguous run
+
+        _add_run(self.peer_aperture, self.peer_aperture_mbox)
         for row in self.d2d_links:
-            for b in row[5:7]:          # (peer_aperture, peer_aperture_mbox)
-                if b is not None and b != NO_PEER_APERTURE:
-                    bytes_.add(b & 0xFF)
+            _add_run(row[5], row[6])            # (peer_aperture, peer_aperture_mbox)
         return frozenset(bytes_)
 
     def is_peer(self, soc_addr: int) -> bool:
         """True if *soc_addr* falls in ANY of this die's outbound peer (D2D)
-        apertures — every link, and both the SRAM (0x41/0x61) and mailbox
-        (0x42/0x62) source bytes of the second-source-aperture model.
+        apertures — every link, and the WHOLE contiguous peer run from the SRAM
+        aperture (0x41/0x61) through the mailbox aperture (0x44/0x64), INCLUSIVE
+        of the dead intermediate bytes (0x42/0x43, 0x62/0x63).
 
         A True here means the access LEAVES THE DIE. Every such access must be
         gated on FCSM==4 first (`hetsoc.safety.require_link_up`) — a peer access
-        on a down link hangs the PS bus. This gate MUST admit the mailbox byte:
-        a doorbell store rides aperture #2, and an ungated doorbell on a down
-        link is exactly the H2 hang the gate exists to prevent.
+        on a down link hangs the PS bus. This gate MUST admit the WHOLE run: the
+        decoder (NUM_PEER_BYTES=4) forwards every byte in it to ahb_sub, so an
+        ungated 0x42/0x43/0x44 access on a down link is exactly the H2 hang the
+        gate exists to prevent. (Only 0x41/0x44 are used; 0x42/0x43 are dead —
+        M4 periph bit-band, no CAM rule — but still classify as peer.)
         """
         if isinstance(soc_addr, bool) or not isinstance(soc_addr, int) or soc_addr < 0:
             return False
@@ -478,7 +502,7 @@ class Target:
         *offset* into it.
 
         *which* selects the SECOND SOURCE APERTURE (spec §6.2):
-        ``"ipc_mailbox"`` forms a mailbox-aperture address (0x42-based on the
+        ``"ipc_mailbox"`` forms a mailbox-aperture address (0x44-based on the
         compute die) so a doorbell rides aperture #2 while SRAM data rides
         aperture #1; the default ``"shared_sram"`` keeps every existing caller
         on aperture #1 (0x41 / 0x2F). A die with no second aperture (eth) folds
@@ -539,11 +563,12 @@ class Target:
         >>> SECOND SOURCE APERTURE (spec §6.2) <<<
         The match byte now depends on *which*: SRAM leaves via aperture #1
         (``peer_aperture``, 0x41 on compute) and the mailbox via aperture #2
-        (``peer_aperture_mbox``, 0x42), so a die can reach far SRAM and far
-        mailbox CONCURRENTLY. So on the compute die
+        (``peer_aperture_mbox``, 0x44 — NOT 0x42: 0x42/0x43 is the M4 peripheral
+        bit-band alias, unreachable from the M4), so a die can reach far SRAM and
+        far mailbox CONCURRENTLY. So on the compute die
         ``cam_rule_for("shared_sram", far=eth) == 0x002D4101`` (match 0x41) while
-        ``cam_rule_for("ipc_mailbox", far=eth) == 0x00234201`` (match 0x42,
-        replace eth's 0x23) and ``far=compute == 0x002A4201`` (replace compute's
+        ``cam_rule_for("ipc_mailbox", far=eth) == 0x00234401`` (match 0x44,
+        replace eth's 0x23) and ``far=compute == 0x002A4401`` (replace compute's
         0x2A). A die with no second aperture (eth) folds the mailbox back onto
         aperture #1, so its proven eth words are unchanged (see below).
 
@@ -750,14 +775,21 @@ _COMPUTE_CHIPLET = Target(
     peer_aperture=0x41,
     # SECOND SOURCE APERTURE — LINK 0 (spec SECOND_SOURCE_APERTURE.md §6.2). One
     # 16 MB peer aperture routes to exactly one far region, so the compute die
-    # gets a SECOND source byte (0x42) + a second CAM rule to reach far-die
+    # gets a SECOND source byte (0x44) + a second CAM rule to reach far-die
     # ipc_mailbox CONCURRENTLY with far-die shared_sram (which stays on 0x41).
-    # The chiplet_d2d_decode second aperture abuts the first (NUM_PEER_BYTES=2 ->
-    # peer range 0x41..0x42, and 0x61..0x62 on link 1). Inbound already admits
-    # both regions (nanosoc_compute_soc.yaml:1096-1100), so this is sender-side
-    # only. SoC-internal only, like peer_aperture: to_host() stays fail-loud
-    # until G2, so an unconfirmed value cannot wedge a board.
-    peer_aperture_mbox=0x42,
+    # BIT-BAND CORRECTION: the mailbox aperture is 0x44, NOT 0x42 —
+    # 0x42000000-0x43FFFFFF is the Cortex-M4 PERIPHERAL bit-band alias (SoC
+    # BB_PRESENT=1, nanosoc_compute_soc.yaml:991), so an M4 store to 0x42/0x43 is
+    # intercepted by the core and never reaches the bus (the same reason the
+    # mailbox INBOUND byte is 0x2A not 0x23 — the SRAM bit-band). The decoder
+    # keeps a CONTIGUOUS run (NUM_PEER_BYTES=4 -> peer range 0x41..0x44, and
+    # 0x61..0x64 on link 1); SRAM stays 0x41, the mailbox is 0x44, and 0x42/0x43
+    # (0x62/0x63) decode-as-peer but are DEAD (no CAM rule; the M4 can't drive
+    # them). Inbound already admits both regions (nanosoc_compute_soc.yaml:
+    # 1096-1100), so this is sender-side only. SoC-internal only, like
+    # peer_aperture: to_host() stays fail-loud until G2, so an unconfirmed value
+    # cannot wedge a board.
+    peer_aperture_mbox=0x44,
     # C1: G2 landed ps_ahb_s, but ps_m cannot reach d2d0/d2d1. MEASURED
     # 2026-07-30 in sim/het_pair: ps_ahb_s write+read-back to compute
     # shared_sram_0 @0x2D002000 -> 0xa5a5beef (the port works), while
@@ -773,8 +805,8 @@ _COMPUTE_CHIPLET = Target(
     # lands on is a bench decision; link 0 is the default (it carries TideChart).
     d2d_links=(
         # name,   d2d window,  size(256MB), tlapb,       tidechart,   peer, mbox
-        ("link0", 0x4000_0000, 0x1000_0000, 0x4003_0000, 0x4004_0000, 0x41, 0x42),
-        ("link1", 0x6000_0000, 0x1000_0000, 0x6003_0000, None,        0x61, 0x62),
+        ("link0", 0x4000_0000, 0x1000_0000, 0x4003_0000, 0x4004_0000, 0x41, 0x44),
+        ("link1", 0x6000_0000, 0x1000_0000, 0x6003_0000, None,        0x61, 0x64),
     ),
     bootrom_soc_base=None,          # no verified boot-ROM signature (no bitstream)
     bootrom_expect=(),
@@ -810,7 +842,7 @@ _COMPUTE_CHIPLET = Target(
            "    eth->compute : sram cam_rule(0x2F,0x2D)=0x002D2F01 ; "
            "mailbox cam_rule(0x2F,0x2A)=0x002A2F01\n"
            "    compute->eth : sram cam_rule(0x41,0x2D)=0x002D4101 ; "
-           "mailbox cam_rule(0x42,0x23)=0x00234201\n"
+           "mailbox cam_rule(0x44,0x23)=0x00234401\n"
            "  Build every rule with cam_rule_for(which, far_target=<receiver>); "
            "it takes the replace byte from the RECEIVER. Applying the eth habit "
            "(replace 0x23) to a COMPUTE receiver is INVALID: 0x23 is not in "
@@ -819,12 +851,17 @@ _COMPUTE_CHIPLET = Target(
            "SECOND SOURCE APERTURE (§6.2): the compute die reaches far SRAM and "
            "far mailbox AT THE SAME TIME by giving each region its own source "
            "byte -- SRAM via aperture #1 (0x41/0x61) and mailbox via aperture #2 "
-           "(0x42/0x62), each with its own CAM rule (RULE_0 SRAM, RULE_1 mbox). "
+           "(0x44/0x64), each with its own CAM rule (RULE_0 SRAM, RULE_1 mbox). "
            "The eth die has one aperture, so its mailbox still rides 0x2F.\n"
+           "BIT-BAND: the mailbox is 0x44/0x64, not 0x42/0x62 -- 0x42/0x43 is the "
+           "M4 peripheral bit-band alias (BB_PRESENT=1), so an M4 store there "
+           "never reaches the bus.\n"
            "DUAL LINK: link 0 @0x4000_0000 carries the TideChart and is the "
            "ribbon default; link 1 @0x6000_0000 has none. peer 0x41 / 0x61 are "
-           "the haddr[24]==1 halves; the mailbox apertures 0x42 / 0x62 abut them "
-           "(see d2d_links).\n"
+           "the haddr[24]==1 halves; the mailbox apertures 0x44 / 0x64 sit at the "
+           "top of the CONTIGUOUS peer run (NUM_PEER_BYTES=4 -> 0x41..0x44 / "
+           "0x61..0x64), with 0x42/0x43 and 0x62/0x63 DEAD (M4 periph bit-band, "
+           "no CAM rule); see d2d_links.\n"
            "0x2E is mgr_remap_0 (a live peripheral) on this die, NOT a TideLink "
            "config window — do not reuse the eth die's 0x2E03_0000."),
 )
