@@ -12,7 +12,7 @@ independent: **an id shared by both is not necessarily the same test.**
 | | count |
 |---|---:|
 | plan ids (matrix rows) | 139 |
-| implemented ids (pytest) | 63 |
+| implemented ids (pytest) | 65 |
 | shared id strings | 31 |
 | — of which **divergent** ⚠️ | **23** |
 | — of which plausibly the same | 8 |
@@ -183,7 +183,7 @@ the matrix covers levels and blocked items that are not yet written.
 
 ## Implemented, not in the matrix
 
-32 pytest ids have no matrix row — the matrix should gain one.
+34 pytest ids have no matrix row — the matrix should gain one.
 
 | id | implementation says | file |
 |---|---|---|
@@ -197,6 +197,8 @@ the matrix covers levels and blocked items that are not yet written.
 | `L0-ADDR-15` | for EVERY ordered target pair, the derived rule translates the | [tests/test_l0_addressing.py](../tests/test_l0_addressing.py) |
 | `L0-ADDR-16` | with a non-zero BASE_OFFSET, the low 24 bits still come from | [tests/test_l0_addressing.py](../tests/test_l0_addressing.py) |
 | `L0-ADDR-18` | importing the whole `hetsoc` package pulls in no board | [tests/test_l0_addressing.py](../tests/test_l0_addressing.py) |
+| `L0-ADDR-19` | a die whose PS port cannot reach D2D must REFUSE those addrs | [tests/test_l0_addressing.py](../tests/test_l0_addressing.py) |
+| `L0-ADDR-20` | the C1 guard must not fire on a die that IS wired correctly | [tests/test_l0_addressing.py](../tests/test_l0_addressing.py) |
 | `L1-PROBE-07` | ROLE_STATUS is mirrored 0x1000 higher, as the APB decode says | [tests/test_l1_probe.py](../tests/test_l1_probe.py) |
 | `L1-PROBE-08` | `ipc_mailbox_0` — the second inbound D2D target — answers | [tests/test_l1_probe.py](../tests/test_l1_probe.py) |
 | `L1-PROBE-09` | `Board.read()` applies the target guard — on a real board | [tests/test_l1_probe.py](../tests/test_l1_probe.py) |

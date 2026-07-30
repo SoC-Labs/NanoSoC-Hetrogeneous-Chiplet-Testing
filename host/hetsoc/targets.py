@@ -174,6 +174,21 @@ class Target:
     #: ``haddr[24]==1`` half of the D2D window. SoC-internal only — never a
     #: host address; ``to_host()`` is unchanged.
     d2d_links: Tuple[Tuple[str, int, int, int, Optional[int], int], ...] = ()
+    #: Does the PS backdoor actually REACH the D2D window on this die?
+    #:
+    #: Normally yes — on the eth die the same eth_ss_0 window carries both the
+    #: SoC map and the D2D config/peer apertures. On the compute die it is
+    #: FALSE: G2 exported `ps_ahb_s`, but `ps_m`'s target list omits d2d0/d2d1
+    #: (nanosoc_compute_soc.yaml:1110), so the backdoor reaches the whole
+    #: internal map and NONE of the D2D window.
+    #:
+    #: This must fail loud rather than be left to the board, because the board's
+    #: failure mode is SILENT AND MISLEADING: an unreachable read returns
+    #: 0x00000000, which decodes as fcsm=0 / cal_done=0 — indistinguishable from
+    #: "the link is down". A bring-up script would report a link failure and an
+    #: operator would go looking at the ribbon. Measured 2026-07-30, see
+    #: docs/SIM_PLAN.md §9c C1.
+    ps_reaches_d2d: bool = True
     provisional: bool = False
     provisional_reason: str = ""
     deploy_action: Optional[str] = None    # fpgahub action name, if any
@@ -284,8 +299,35 @@ class Target:
                     % (self.name, soc_addr, self.window_size, self.window_base))
             host = self.window_base + soc_addr
 
+        self._assert_no_d2d_unreachable(soc_addr)
         self._assert_no_bare_link_trap(host, soc_addr)
         return host
+
+    def _assert_no_d2d_unreachable(self, soc_addr: int) -> None:
+        """Refuse D2D-window addresses on a die whose PS port cannot reach them.
+
+        Returning the host address would be worse than useless: the access
+        succeeds at the AHB level and reads back zeros, so every TideLink status
+        register looks like a down link instead of an unreachable one.
+        """
+        if self.ps_reaches_d2d:
+            return
+        for name, wbase, wsize, _tb, _tc, _pa in self.d2d_links:
+            if wbase <= soc_addr < wbase + wsize:
+                raise AddressGuardError(
+                    "%s.to_host(0x%X): inside D2D window %s "
+                    "[0x%X .. 0x%X), which this die's PS backdoor CANNOT REACH.\n"
+                    "  `ps_m`'s target list omits d2d0/d2d1 "
+                    "(nanosoc_compute_soc.yaml:1110), so the backdoor reaches the "
+                    "internal map and none of the D2D window: no TideLink APB, no "
+                    "CAM, no peer aperture.\n"
+                    "  This is refused rather than allowed because the hardware "
+                    "failure is SILENT: the read returns 0x00000000, which decodes "
+                    "as fcsm=0/cal_done=0 and is indistinguishable from a DOWN "
+                    "LINK. You would debug a ribbon that is fine.\n"
+                    "  Fix: add d2d0/d2d1 to ps_m's targets in the compute repo, "
+                    "then set ps_reaches_d2d=True here. See docs/SIM_PLAN.md 9c C1."
+                    % (self.name, soc_addr, name, wbase, wbase + wsize))
 
     def _relocate(self, addr: int) -> int:
         """Aperture-table relocation (the bare-link shape, per tl_socmap.remap)."""
@@ -620,6 +662,11 @@ _COMPUTE_CHIPLET = Target(
     #   post-decoder value. Confirm 0x41/0x61 with the decoder IN PATH on a real
     #   build before trusting a cross-die transfer.
     peer_aperture=0x41,
+    # C1: G2 landed ps_ahb_s, but ps_m cannot reach d2d0/d2d1. MEASURED
+    # 2026-07-30 in sim/het_pair: ps_ahb_s write+read-back to compute
+    # shared_sram_0 @0x2D002000 -> 0xa5a5beef (the port works), while
+    # 0x40032080/2084/2108 all read 0x00000000 and the role never locks.
+    ps_reaches_d2d=False,
     kind="chiplet",
     # LINK 0 config plane (docs/BRINGUP_GAPS.md §G5). 0x2E is mgr_remap_0 (a live
     # peripheral) on this die — NOT a TideLink window; do not reuse eth's 0x2E03.

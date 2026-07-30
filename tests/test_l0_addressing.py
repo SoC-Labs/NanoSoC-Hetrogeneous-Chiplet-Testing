@@ -651,3 +651,77 @@ def test_l0_addr_18_l0_imports_no_hardware_backend():
         assert "/dev/mem" not in opened, (
             "importing hetsoc opened /dev/mem. There must be no unchecked path "
             "to physical memory.")
+
+
+# ===========================================================================
+# C1 — the PS backdoor that cannot reach the D2D window.
+# ===========================================================================
+def test_l0_addr_19_d2d_window_refused_when_ps_cannot_reach_it():
+    """L0-ADDR-19: a die whose PS port cannot reach D2D must REFUSE those addrs.
+
+    Compute G2 exported `ps_ahb_s`, but `ps_m`'s target list omits d2d0/d2d1
+    (nanosoc_compute_soc.yaml:1110). Measured in sim/het_pair on 2026-07-30: the
+    port works (write+read-back to compute shared_sram_0 @0x2D002000 returns
+    0xa5a5beef) while 0x40032080/2084/2108 all read 0x00000000.
+
+    Why this must be an exception and not a returned address: the hardware
+    failure is SILENT. An unreachable read returns zeros, and zeros decode as
+    fcsm=0/cal_done=0 — indistinguishable from a down link. A bring-up script
+    would report "link failed" and send an operator to check a ribbon that is
+    fine. Refusing in code turns a misdiagnosis into a message.
+    """
+    import dataclasses
+
+    from hetsoc.safety import AddressGuardError
+    from hetsoc.targets import get_target
+
+    compute = get_target("kr260-compute-chiplet")
+    assert compute.ps_reaches_d2d is False, (
+        "the compute descriptor no longer records C1. If d2d0/d2d1 were added "
+        "to ps_m's targets, that is good news — update this test and cite the "
+        "commit; do not just flip the flag.")
+
+    # The shipped descriptor is unresolved (window_size == 0) so every address
+    # already fails. Resolve a copy so the D2D guard is what is under test and
+    # not the provisional guard standing in front of it.
+    resolved = dataclasses.replace(
+        compute, window_size=0x1_0000_0000, provisional=False,
+        source=compute.source + " [+ test-local window to exercise the D2D guard]")
+
+    # An address in the INTERNAL map is fine — the backdoor genuinely reaches it.
+    assert resolved.to_host(0x2D00_1000) == resolved.window_base + 0x2D00_1000
+
+    # Anything inside either D2D window is refused, with the cause named.
+    for soc_addr, why in ((0x4003_2108, "link0 TideLink APB"),
+                          (0x4003_4010, "link0 CAM rule 0"),
+                          (0x4100_1000, "link0 peer aperture"),
+                          (0x6003_2108, "link1 TideLink APB"),
+                          (0x6100_1000, "link1 peer aperture")):
+        try:
+            got = resolved.to_host(soc_addr)
+        except AddressGuardError as exc:
+            assert "CANNOT REACH" in str(exc), (
+                "the refusal for %s (0x%X) does not explain itself: %s"
+                % (why, soc_addr, exc))
+            assert "0x00000000" in str(exc), (
+                "the refusal for %s must warn that the silent hardware failure "
+                "reads back zeros and looks like a down link" % why)
+        else:
+            raise AssertionError(
+                "%s (0x%X) was mapped to 0x%X instead of being refused. On a "
+                "real board that access reads 0x00000000 and every TideLink "
+                "status register looks like a down link." % (why, soc_addr, got))
+
+
+def test_l0_addr_20_eth_die_still_reaches_its_own_d2d_window():
+    """L0-ADDR-20: the C1 guard must not fire on a die that IS wired correctly.
+
+    The eth die's eth_ss_0 window carries the SoC map AND the D2D apertures —
+    that is how the proven bring-up works. If the guard caught this one too it
+    would break the only path that currently functions."""
+    from hetsoc.targets import get_target
+
+    eth = get_target("kr260-eth-chiplet")
+    assert eth.ps_reaches_d2d is True
+    assert eth.to_host(0x2E03_2108) == eth.window_base + 0x2E03_2108
+    assert eth.to_host(0x2F00_1000) == eth.window_base + 0x2F00_1000
