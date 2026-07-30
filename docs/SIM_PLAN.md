@@ -785,6 +785,93 @@ retagged `BLOCKED-G-FW`.
 
 ---
 
+## 9c. Compute-repo findings from the G2 bump  **[MEASURED 2026-07-29/30]**
+
+Three defects found while absorbing compute-chiplet `1a9ab1b`. All are in the
+**compute repo**, so per this run's guard rails they are written up, not patched.
+Ordered by how much they block.
+
+### C1 — `ps_m` cannot reach the D2D window  *(blocks host-side compute bring-up)*
+
+G2 re-exported `ps_ahb_s` and it genuinely works: a write + read-back to compute
+`shared_sram_0` @`0x2D002000` returns `0xa5a5beef`. But **every** access to the
+D2D window is dead:
+
+| read over `ps_ahb_s` | result |
+|---|---|
+| `0x40032080` ROLE_CFG | `0x00000000` |
+| `0x40032084` ROLE_STATUS (after writing `0x03`) | `0x00000000` |
+| `0x40032108` SWI_LANE_STATUS | `0x00000000` |
+| `c_role_locked_o_0` | `0` |
+
+`ps_m`'s target list (`nanosoc_compute_soc.yaml:1110`) is:
+`qspi_flash_0, qspi_flash_xip, ipc_mailbox_0, dma_250_0, core_remap_0,
+mgr_remap_0, manager_periph_0, hw_spinlock_0, phc_0, shared_sram_0,
+compute_admin` — **no `d2d0`, no `d2d1`.** `manager_m`, `compute_m` and
+`dma_250_0_m` all have them.
+
+So the backdoor reaches the whole *internal* map and none of the D2D window: no
+TideLink APB, no CAM, no peer aperture. That contradicts the same file at `:104`
+("becomes top-matrix initiator `ps_m` reaching the whole compute map").
+
+**Consequence:** host-side bring-up of the compute die is impossible on silicon
+until `d2d0`/`d2d1` join that list — which is the entire purpose of a PS
+backdoor on this bench. Looks like a two-line yaml change. **This is the single
+highest-value fix outstanding.**
+
+### C2 — the G2/G4 regression test reads a hard-coded scratch path  *(the test never saw G2)*
+
+`verif/g2_soc_peer_aperture/Makefile:44`:
+
+```make
+CS ?= /home/dam1n19/SoCLabs/temp/compute-system
+```
+
+An absolute path to a scratch directory **outside the repo**, not the pinned
+`nanosoc-compute-system` submodule. That checkout is at `42d9fdf` and its
+`sys_desc` contains **zero** occurrences of `ps_ahb_s` — it predates G2.
+
+Three consequences:
+1. The test **cannot elaborate** against the post-G2 chiplet top: the top
+   instantiates `ps_ahb_s_*`, the stale generated SoC does not declare them, and
+   VCS emits 8× `Error-[UPIMI-E] Undefined port`.
+2. G4's "test in-path" claim was therefore validated against a tree that **is not
+   the one that ships**.
+3. It is unreproducible on any other machine.
+
+**The test itself is sound.** Pointed at the pinned submodule it passes:
+`soc_peer_store_crosses_link_to_far_sram PASS` (1.80 ms sim, 70 s wall). The fix
+is to default `CS` to the submodule.
+
+### C3 — SoC regeneration is gated on presence, not freshness  *(fixed here, same bug exists there)*
+
+The het sim gated regeneration on `[ ! -f compute_soc.flist ]`, so a `sys_desc`
+change never triggered a rebuild — shipping a stale generated SoC after the bump
+and failing with 10× `Undefined port` that points at the RTL rather than the
+artifact. **Fixed in this repo** (`sim/het_pair/Makefile` now compares mtimes and
+`rm -rf`s before regenerating; verified both ways). `verif/g2_soc_peer_aperture`
+has the same shape of problem via C2 and would benefit from the same treatment.
+
+---
+
+## 9d. compute → eth: blocker refined  **[supersedes the §9b conclusion]**
+
+§9b concluded compute→eth was blocked on **firmware**. With G2 that is now only
+*half* right, and the cheaper route is newly available:
+
+| Initiator | Reaches `d2d0`? | Needs |
+|---|---|---|
+| `manager_m` (M0+) | yes | firmware — `G-FW`, as §9b said |
+| `compute_m` (M4) | yes | firmware |
+| `dma_250_0_m` | yes | firmware to program it |
+| **`ps_m`** (the PS backdoor) | **NO — C1** | *nothing, once C1 is fixed* |
+
+So compute→eth is blocked on **C1 or firmware, whichever lands first**, and C1
+looks like a two-line yaml change against a firmware task. `L0-SIM-04` and
+`L0-SIM-06` stay blocked, but the cheapest unblock is now C1, not `G-FW`.
+
+---
+
 ## 10a. Bootstrap hazards  **[VERIFIED 2026-07-29 on a clean clone]**
 
 `make deps` is deliberately shallow (see `scripts/bootstrap.sh`) — it does not
