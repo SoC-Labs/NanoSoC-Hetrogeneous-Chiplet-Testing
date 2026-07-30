@@ -70,6 +70,8 @@ CONFIRMED_SAME = {
     "L0-SIM-07",  # CAM-off identity control     <- aperture byte arrives untranslated
     "L0-SIM-08",  # inbound confinement DECERR   <- eth's 0x23 refused by compute
     "L0-SIM-10",  # multi-word burst             <- 8 consecutive words intact
+    "L0-SIM-13",  # TX-aperture wedge gate       <- link-down TX access ERRORs
+    "L0-SIM-17",  # asymmetric reset ordering    <- far-die-dark, near die survives
 }
 
 

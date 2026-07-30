@@ -427,3 +427,119 @@ async def test_diag_ps_ahb_s_reaches_compute(dut):
     except Exception as e:
         dut._log.info(f"PSDIAG role write EXCEPTION {type(e).__name__}: {e}")
     dut._log.info("PSDIAG COMPLETE")
+
+
+@cocotb.test(timeout_time=40, timeout_unit="ms")
+async def test_l0_sim_13_tx_aperture_faults_when_link_down(dut):
+    """L0-SIM-13: a TX-aperture access with the link DOWN must ERROR, not hang.
+
+    chiplet_d2d_decode.sv:116-131 states the contract: TideLink marks `ahb_tx_*`
+    a WEDGE HAZARD — a write with the link down never completes and hangs the
+    bus — so the decoder routes it to the default responder for a clean two-cycle
+    AHB ERROR instead. "A stall is indistinguishable from a dead SoC on a bench,
+    and a fault is a fact you can act on."
+
+    This is the silicon wedge path, so the gate is worth an explicit test: if it
+    regresses, the symptom on the bench is a board that has to be JTAG-POR'd, and
+    nothing in the log says why.
+
+    Deliberately runs BEFORE bring-up: link_active_i is low, tx_open is low.
+    The cocotb timeout is the hang detector — if the access never completes this
+    test fails by timing out, which is exactly the failure being guarded."""
+    tb = ManualPair(dut)
+    await tb.reset()
+
+    assert not _i(dut.e_link_active_o), (
+        "link reports active before bring-up — this test needs it DOWN to "
+        "exercise the gate")
+
+    tx_addr = 0x2E00_0100          # 0x2E, block 0 -> hsel_tx (the wedge aperture)
+    resp = await tb.e.ahb.write(tx_addr, 0xDEADBEEF)
+    raw = str(resp[0].get("resp", resp[0]))
+    dut._log.info(f"TX-aperture write @0x{tx_addr:08x} with link DOWN -> resp={raw}")
+
+    assert "ERROR" in raw.upper(), (
+        f"TX-aperture write with the link down returned {raw!r}, expected an AHB "
+        "ERROR. The wedge gate (chiplet_d2d_decode.sv:116-131) is not doing its "
+        "job — on silicon this access hangs the bus and needs a JTAG POR.")
+
+    # And the bus must still be usable afterwards: a fault, not a wedge.
+    await tb.e.write(0x2D00_3000, 0x1234ABCD)
+    rb = await tb.e.read(0x2D00_3000)
+    assert rb == 0x1234ABCD, (
+        f"the eth bus did not survive the faulted TX access: SRAM read back "
+        f"0x{rb:08x}. The gate errored but left the bus unusable, which is the "
+        "wedge it was meant to prevent.")
+    dut._log.info("TX gate OK: clean ERROR, bus still usable afterwards")
+
+    # MUTATION-TESTED. Retargeting this at tlapb ROLE_CFG (0x2E03_2080 —
+    # writable, and demonstrably reachable pre-link since that is how the link
+    # is brought up) returns AHBResp.OKAY and fails the assertion. So the check
+    # discriminates by APERTURE and is not simply observing that everything
+    # errors while the link is down.
+    #
+    # A first mutation attempt at 0x2E03_2108 (SWI_LANE_STATUS) was INCONCLUSIVE:
+    # that register is read-only, so a write to it errors for its own reasons.
+    # Recorded because it is an easy trap to repeat.
+
+
+@cocotb.test(timeout_time=60, timeout_unit="ms")
+async def test_l0_sim_17_far_die_dark_does_not_wedge_the_near_die(dut):
+    """L0-SIM-17: with the far die held in reset, the near die must stay usable.
+
+    The bench hazard this models is real and routine: one board is powered,
+    reflashed or POR'd while the other is live. On silicon the near die's PS then
+    issues D2D accesses into a die that cannot answer. If that hangs the near
+    die's bus, the operator loses BOTH boards to one reset — and the eth-chiplet
+    runbook already records a JTAG-POR-only recovery for exactly this class.
+
+    Asserts the near die (E) survives with the far die (C) dark:
+      * its own SRAM still reads and writes  (the SoC is alive)
+      * the TX aperture faults rather than hanging (the wedge gate holds with no
+        peer at all, not merely with a peer that is present but not linked)
+      * the link never falsely reports up against a dead peer"""
+    tb = ManualPair(dut)
+
+    # Reset both, then hold die C in reset while die E runs.
+    dut.e_sysresetn.value = 0
+    dut.c_sysresetn.value = 0
+    dut.e_pad_en.value = 1
+    dut.c_pad_en.value = 1
+    await ClockCycles(dut.sys_fclk, 20)
+    dut.e_sysresetn.value = 1          # die E released
+    # die C deliberately LEFT IN RESET — the far die is dark.
+    await ClockCycles(dut.sys_fclk, 4000)
+
+    assert not _i(dut.c_role_locked_o_0), "die C locked a role while held in reset"
+
+    # 1. the near die's own SoC is alive
+    await tb.e.write(0x2D00_4000, 0xFEEDFACE)
+    rb = await tb.e.read(0x2D00_4000)
+    assert rb == 0xFEEDFACE, (
+        f"die E cannot use its OWN SRAM with the far die dark (read 0x{rb:08x}) "
+        "— a dark peer has taken out the near die")
+
+    # 2. its config plane still answers
+    st = await tb.e.apb_read(0x2108)
+    dut._log.info(f"die E SWI_LANE_STATUS with far die dark = 0x{st:08x}")
+
+    # 3. the link must NOT claim to be up against a dead peer
+    assert not _i(dut.e_link_active_o), (
+        "die E reports link_active with the far die held in reset — a false "
+        "link-up is worse than no link: bring-up would proceed onto a dead peer")
+
+    # 4. the wedge gate holds with NO peer, not just an unlinked one
+    resp = await tb.e.ahb.write(0x2E00_0100, 0xDEADBEEF)
+    raw = str(resp[0].get("resp", resp[0]))
+    assert "ERROR" in raw.upper(), (
+        f"TX-aperture write with the far die DARK returned {raw!r}, expected "
+        "ERROR — the gate protects against link-down but not against no-peer")
+
+    # 5. and the near die is still usable after all of that
+    await tb.e.write(0x2D00_4004, 0x5A5A5A5A)
+    rb2 = await tb.e.read(0x2D00_4004)
+    assert rb2 == 0x5A5A5A5A, (
+        f"die E unusable after a faulted D2D access with the far die dark "
+        f"(read 0x{rb2:08x})")
+    dut._log.info("far-die-dark OK: die E fully usable, no false link-up, "
+                  "TX gate held")

@@ -74,8 +74,8 @@ id with the row struck through in the "Retired" section.
 | `BLOCKED-<gap>` | Cannot run until a named gap closes. |
 
 > **Nothing in this matrix has ever run on heterogeneous SILICON**, and only
-> the six `PROVEN-SIM-HET` rows have run on the heterogeneous pair at all
-> (in simulation, 2026-07-29 — see [`SIM_PLAN.md` §9a](SIM_PLAN.md)). Every
+> the **eight** `PROVEN-SIM-HET` rows have run on the heterogeneous pair at all
+> (in simulation, 2026-07-29/30 — see [`SIM_PLAN.md` §9a](SIM_PLAN.md)). Every
 > other `PROVEN-*` tag is evidence that the *mechanism* works, not that the
 > *het pair* works.
 
@@ -149,11 +149,11 @@ it costs (it is real editing, not a parameter flip).
 | `L0-SIM-10` | multi-word burst | cross-beat off-by-one one beat cannot catch | 8 words `+0x1000..0x101C`, values `0x5EED0000+(i<<4)+i` | `L0-SIM-03` | all 8 land in order | none | yes | **PROVEN-SIM-HET** |
 | `L0-SIM-11` | mailbox IRQ source latches | the cross-die interrupt *source* | after `L0-SIM-05`, read far-die mailbox `+0x028` | `L0-SIM-05` | `IRQ_STATUS[0]==1` | none | yes | BLOCKED-G-TB |
 | `L0-SIM-12` | `d2d_irq` → NVIC wiring | the two dies' NVIC maps differ as documented | drive each source; probe both vectors | `L0-SIM-01` | eth `[7:0]`→CPU0 IRQ[17:10], `[15:8]`→CPU1 IRQ[16:9]; compute `[7:0]`→**M4** NVIC[1..8], `[15:8]`→**M0+** NVIC[13..20] | none | yes | BLOCKED-G-TB |
-| `L0-SIM-13` | TX-aperture wedge gate | link-down TX access faults instead of hanging | port `verif/chiplet_d2d_decode/tb_tx_gate.sv` to **both** window bases | none | `hsel_tx==0` when `link_active=0`; clean 2-cycle AHB ERROR; `hsel_tlapb` **still** selectable (bring-up must work with the link down) | none | yes | PROVEN-SIM (`verif/chiplet_d2d_decode`, eth window only) |
-| `L0-SIM-14` | HREADY-loop guard | the decoder's `dph_peer` loop break, on both window shapes | port `tb_hready_loop.sv`; 4 back-to-back NONSEQ peer writes, no IDLE beats | none | 4 writes land, `write_count==4` | none | yes | PROVEN-SIM (`verif/chiplet_d2d_decode`, eth window only) |
+| `L0-SIM-13` | TX-aperture wedge gate | link-down TX access faults instead of hanging | port `verif/chiplet_d2d_decode/tb_tx_gate.sv` to **both** window bases | none | `hsel_tx==0` when `link_active=0`; clean 2-cycle AHB ERROR; `hsel_tlapb` **still** selectable (bring-up must work with the link down) | none | yes | **PROVEN-SIM-HET** (was eth-window-only in `verif/chiplet_d2d_decode`; now in-path on the het pair) |
+| `L0-SIM-14` | HREADY-loop guard | the decoder's `dph_peer` loop break, on both window shapes | port `tb_hready_loop.sv`; 4 back-to-back NONSEQ peer writes, no IDLE beats | none | 4 writes land, `write_count==4` | none | yes | **PROVEN-SIM-HET** (was eth-window-only in `verif/chiplet_d2d_decode`; now in-path on the het pair) |
 | `L0-SIM-15` | **compute decode aliasing + peer byte** | resolves `0x40` vs `0x41`, and the 240 MB alias | instantiate the **real** `nanosoc_compute_chiplet` top (not the decoder-bypassing `tb_soc_pair.sv`); sweep `0x40..0x4F` | `L0-SIM-01` | peer aperture answers at `0x41` and every odd 16 MB slot; config at every even slot; the compute descriptor matches | none | yes | BLOCKED-G-ADDR |
 | `L0-SIM-16` | TideChart election over a real link | election has **never** been simulated over TideLink | het pair, both dies `TC_CTRL[0]`, widened `TC_TIMEOUT` | `L0-SIM-02` | exactly one `is_root`; identical `TC_BEST_CLAIM` both sides | none | yes | BLOCKED-G-TC |
-| `L0-SIM-17` | asymmetric reset ordering | the far-die-dark hazard | hold die B in reset, bring die A up, release B; repeat with the order swapped, ×N | `L0-SIM-01` | link converges either way; no false-FULL wedge. ⚠ an idealised sim resolves demets cleanly and **may pass vacuously** — see `RISK-6` | none | yes | BLOCKED-G-TB |
+| `L0-SIM-17` | asymmetric reset ordering | the far-die-dark hazard | hold die B in reset, bring die A up, release B; repeat with the order swapped, ×N | `L0-SIM-01` | link converges either way; no false-FULL wedge. ⚠ an idealised sim resolves demets cleanly and **may pass vacuously** — see `RISK-6` | none | yes | **PROVEN-SIM-HET** |
 | `L0-SIM-18` | error injection / recovery | whether a bit error is recoverable or terminal | reuse `tidelink/cocotb/tidelink_error_injection` against the het pair; inject ACK-loss / pktnum gap on an AXI FC node | `L0-SIM-02` | with recovery restored the link recovers. **Today it is expected to wedge** — this is the regression that gates `G-WEDGE` | none | yes | BLOCKED-G-WEDGE |
 
 ---
