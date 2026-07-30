@@ -287,13 +287,15 @@ class TestHeterogeneousPairAddressing:
         assert eth.cam_rule_for("ipc_mailbox", far_target=compute) == 0x002A2F01
 
     def test_the_compute_die_originates_receiver_keyed_cross_die_rules(self):
-        # Post-G4 the compute die has a peer aperture (0x41), so it can now
-        # ORIGINATE cross-die rules. Per G7 the replace byte is the RECEIVER's
-        # (eth's) map: mailbox 0x23, shared_sram 0x2D — so compute->eth is
-        # cam_rule(0x41, ...).
+        # Post-G4 the compute die has a peer aperture, so it can now ORIGINATE
+        # cross-die rules. Per G7 the replace byte is the RECEIVER's (eth's) map:
+        # mailbox 0x23, shared_sram 0x2D. Per the SECOND SOURCE APERTURE (§6.2)
+        # the MATCH byte now depends on the region: SRAM leaves via aperture #1
+        # (0x41), the mailbox via aperture #2 (0x42), so compute->eth SRAM is
+        # cam_rule(0x41, 0x2D) and mailbox is cam_rule(0x42, 0x23).
         compute = get_target(COMPUTE)
         eth = get_target(ETH)
-        assert compute.cam_rule_for("ipc_mailbox", far_target=eth) == 0x00234101
+        assert compute.cam_rule_for("ipc_mailbox", far_target=eth) == 0x00234201
         assert compute.cam_rule_for("shared_sram", far_target=eth) == 0x002D4101
         # The eth-habit rule (replace 0x23) is INVALID at a COMPUTE receiver:
         # 0x23 is not in compute's inbound set, so no cam_rule_for(...) aimed at
@@ -301,6 +303,83 @@ class TestHeterogeneousPairAddressing:
         assert 0x23 not in compute.inbound_targets.values()
         for which in ("shared_sram", "ipc_mailbox"):
             assert compute.inbound_byte(which) != 0x23
+
+
+# =============================================================================
+# THE SECOND SOURCE APERTURE (spec SECOND_SOURCE_APERTURE.md §6.2)
+#
+# One 16 MB peer aperture routes to exactly one far-die 16 MB region, so the
+# compute die needs a SECOND source byte + a second CAM rule to reach far-die
+# shared_sram (0x41->0x2D) AND far-die ipc_mailbox (0x42->0x2A/0x23) at the same
+# time. These tests pin that the registry now models per-region source bytes.
+# =============================================================================
+class TestSecondSourceAperture:
+    def test_cam_rule_for_selects_the_mailbox_aperture_by_region(self):
+        compute = get_target(COMPUTE)
+        eth = get_target(ETH)
+        # Mailbox leaves via aperture #2 (match 0x42); replace is the RECEIVER's
+        # mailbox byte — 0x2A on a compute receiver, 0x23 on an eth receiver.
+        assert compute.cam_rule_for("ipc_mailbox", far_target=compute) == 0x002A4201
+        assert compute.cam_rule_for("ipc_mailbox", far_target=eth) == 0x00234201
+        # SRAM is unchanged: aperture #1 (match 0x41), replace 0x2D both ways.
+        assert compute.cam_rule_for("shared_sram", far_target=compute) == 0x002D4101
+        assert compute.cam_rule_for("shared_sram", far_target=eth) == 0x002D4101
+
+    def test_a_third_target_is_still_refused_by_the_receiver(self):
+        # inbound_byte still guards the replace side: no third region can be aimed
+        # at, whichever aperture the sender uses.
+        compute = get_target(COMPUTE)
+        with pytest.raises(AddressGuardError):
+            compute.cam_rule_for("qspi_flash_0", far_target=compute)
+
+    def test_peer_selects_the_source_aperture_by_region(self):
+        compute = get_target(COMPUTE)
+        # Default (and explicit shared_sram) -> aperture #1, 0x41-based.
+        assert compute.peer(0x1000) == 0x41001000
+        assert compute.peer(0x1000, which="shared_sram") == 0x41001000
+        # Mailbox -> aperture #2, 0x42-based, so a doorbell rides its own window.
+        assert compute.peer(0x0020, which="ipc_mailbox") == 0x42000020
+        assert compute.peer(0, which="ipc_mailbox") == 0x42000000
+
+    def test_is_peer_admits_both_apertures_on_both_links(self):
+        # SAFETY CRITICAL: is_peer is the gate that forces a peer access onto the
+        # FCSM==4 require_link_up check. If the mailbox byte 0x42 were not seen as
+        # peer, a doorbell on a down link would escape the gate and hang the PS
+        # bus (H2). Both apertures, both links, must be recognised.
+        compute = get_target(COMPUTE)
+        for addr in (0x41000000, 0x42000000,        # link 0 SRAM / mailbox
+                     0x61000000, 0x62000000):       # link 1 SRAM / mailbox
+            assert compute.is_peer(addr) is True, (
+                "is_peer(0x%08X) must be True — it is a peer aperture" % addr)
+        # 0x43 is NOT a peer aperture: the decoder's peer run is exactly
+        # {0x41,0x42} (link 0) and it still faults 0x43 (anti-alias).
+        assert compute.is_peer(0x43000000) is False
+        assert compute.is_peer(0x63000000) is False
+        # Local planes are still not peer (would make a down link undiagnosable).
+        assert compute.is_peer(0x40032108) is False   # link-0 TideLink APB
+        assert compute.is_peer(0x2A000000) is False    # this die's OWN mailbox
+
+    def test_the_eth_die_has_no_second_aperture_and_is_unchanged(self):
+        # The eth-side second aperture is out of scope (§9): eth keeps ONE
+        # aperture, so its mailbox rule still rides 0x2F and its proven words are
+        # untouched. is_peer must NOT admit 0x30 (its next byte up).
+        eth = get_target(ETH)
+        assert eth.peer_aperture_mbox == NO_PEER_APERTURE
+        assert eth.cam_rule_for("ipc_mailbox") == 0x00232F01
+        assert eth.cam_rule_for("shared_sram") == 0x002D2F01
+        assert eth.peer(0, which="ipc_mailbox") == 0x2F000000   # folds to #1
+        assert eth.is_peer(0x2F000000) is True
+        assert eth.is_peer(0x30000000) is False
+
+    def test_the_sram_aperture_is_still_the_odd_anti_tx_half(self):
+        # The anti-TX invariant still holds for aperture #1 (the SRAM half):
+        # 0x41/0x61 are the ODD haddr[24]==1 halves, never the even 0x40/0x60 TX
+        # aperture that wedges. The mailbox aperture (0x42/0x62) is the even byte
+        # abutting it, which is legal in the range-based decoder (NUM_PEER_BYTES).
+        compute = get_target(COMPUTE)
+        assert compute.peer_aperture % 2 == 1
+        for _n, _wb, _ws, _tb, _tc, peer, _mbox in compute.d2d_links:
+            assert peer % 2 == 1, "aperture #1 must be the odd (non-TX) half"
 
 
 # =============================================================================
@@ -341,9 +420,16 @@ class TestProvisionalComputeTarget:
         # and to_host() stays fail-loud until G2 (see the provisional tests
         # above), so an unconfirmed value cannot wedge a board.
         assert target.peer_aperture == 0x41
-        assert target.peer_aperture % 2 == 1        # the odd (peer) half
+        assert target.peer_aperture % 2 == 1        # the odd (SRAM/peer#1) half
+        # SECOND SOURCE APERTURE (spec §6.2): the mailbox rides its OWN source
+        # byte (0x42 link 0 / 0x62 link 1) so a doorbell reaches the far mailbox
+        # CONCURRENTLY with SRAM on aperture #1 (they no longer contend for one
+        # aperture). The mailbox aperture is the even byte abutting the SRAM one.
+        assert target.peer_aperture_mbox == 0x42
         link_peers = {row[0]: row[5] for row in target.d2d_links}
+        link_mbox = {row[0]: row[6] for row in target.d2d_links}
         assert link_peers == {"link0": 0x41, "link1": 0x61}
+        assert link_mbox == {"link0": 0x42, "link1": 0x62}
 
     def test_it_declares_no_bootrom_probe(self, target):
         assert target.bootrom_soc_base is None

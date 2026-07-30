@@ -145,7 +145,14 @@ class Target:
             address bytes the FAR die may land traffic on. Exactly the set the
             far die's inbound initiator decodes; anything else DECERRs.
         peer_aperture: local address byte of the outbound D2D window (0x2F), or
-            ``NO_PEER_APERTURE`` for a design with no peer window.
+            ``NO_PEER_APERTURE`` for a design with no peer window. This is
+            aperture #1 — the SRAM/default source byte.
+        peer_aperture_mbox: the SECOND source aperture (spec §6.2) — a distinct
+            local address byte (0x42 on the compute die, link 0) that the CAM
+            rewrites to the far-die ``ipc_mailbox`` while aperture #1 reaches
+            far-die ``shared_sram`` CONCURRENTLY. ``NO_PEER_APERTURE`` means the
+            die has no second aperture (the eth die: its mailbox rule still
+            rides ``peer_aperture`` 0x2F; its own second aperture is deferred).
     """
 
     name: str
@@ -153,6 +160,12 @@ class Target:
     window_size: int
     inbound_targets: Dict[str, int] = field(default_factory=dict)
     peer_aperture: int = NO_PEER_APERTURE
+    #: SECOND SOURCE APERTURE (spec §6.2). One 16 MB peer aperture routes to
+    #: exactly one far-die 16 MB region, so reaching far SRAM (via
+    #: ``peer_aperture``) AND far mailbox at the same time needs a second source
+    #: byte + a second CAM rule. LINK-0 value (0x42; link 1's 0x62 lives in
+    #: ``d2d_links``). ``NO_PEER_APERTURE`` == no second aperture on this die.
+    peer_aperture_mbox: int = NO_PEER_APERTURE
 
     # --- extensions (additive; the contract fields above are unchanged) ------
     kind: str = "chiplet"                  # "chiplet" | "bare-link"
@@ -168,12 +181,14 @@ class Target:
     #: carrying a TideChart — and this table is the full per-link map, including
     #: the second link the eth die does not have. Each row is
     #: ``(name, d2d_window_base, d2d_window_size, tlapb_base, tidechart_base,
-    #: peer_aperture)`` with ``tidechart_base`` None where the link has no
-    #: TideChart. A link's CAM (address-translator) bank is
-    #: ``tlapb_base + regs.ADDRXLAT_BANK``; its peer aperture is the
-    #: ``haddr[24]==1`` half of the D2D window. SoC-internal only — never a
-    #: host address; ``to_host()`` is unchanged.
-    d2d_links: Tuple[Tuple[str, int, int, int, Optional[int], int], ...] = ()
+    #: peer_aperture, peer_aperture_mbox)`` with ``tidechart_base`` None where the
+    #: link has no TideChart. ``peer_aperture`` is aperture #1 (SRAM);
+    #: ``peer_aperture_mbox`` is the SECOND source aperture (mailbox, spec §6.2).
+    #: A link's CAM (address-translator) bank is
+    #: ``tlapb_base + regs.ADDRXLAT_BANK``; its peer aperture #1 is the
+    #: ``haddr[24]==1`` half of the D2D window, aperture #2 the next byte up.
+    #: SoC-internal only — never a host address; ``to_host()`` is unchanged.
+    d2d_links: Tuple[Tuple[str, int, int, int, Optional[int], int, int], ...] = ()
     #: Does the PS backdoor actually REACH the D2D window on this die?
     #:
     #: Normally yes — on the eth die the same eth_ss_0 window carries both the
@@ -217,6 +232,11 @@ class Target:
         if self.peer_aperture != NO_PEER_APERTURE and not 0 <= self.peer_aperture <= 0xFF:
             raise ConfigError("target %r: peer_aperture 0x%X is not an 8-bit "
                               "address byte" % (self.name, self.peer_aperture))
+        if self.peer_aperture_mbox != NO_PEER_APERTURE \
+                and not 0 <= self.peer_aperture_mbox <= 0xFF:
+            raise ConfigError("target %r: peer_aperture_mbox 0x%X is not an "
+                              "8-bit address byte"
+                              % (self.name, self.peer_aperture_mbox))
         if self.window_size < 0 or self.window_base < 0:
             raise ConfigError("target %r: negative window base/size" % self.name)
 
@@ -312,7 +332,8 @@ class Target:
         """
         if self.ps_reaches_d2d:
             return
-        for name, wbase, wsize, _tb, _tc, _pa in self.d2d_links:
+        for row in self.d2d_links:
+            name, wbase, wsize = row[0], row[1], row[2]
             if wbase <= soc_addr < wbase + wsize:
                 raise AddressGuardError(
                     "%s.to_host(0x%X): inside D2D window %s "
@@ -388,18 +409,55 @@ class Target:
                self.name))
 
     # ------------------------------------------------------------------ #
+    def _peer_source_byte(self, which: str) -> int:
+        """LINK-0 outbound source byte (addr[31:24]) for far-die region *which*.
+
+        The SECOND SOURCE APERTURE (spec §6.2): mailbox traffic leaves via
+        aperture #2 (``peer_aperture_mbox``) when this die declares one, so it
+        can reach the far mailbox CONCURRENTLY with far SRAM on aperture #1.
+        SRAM — and any die with no second aperture (the eth die) — uses
+        aperture #1 (``peer_aperture``), so the eth mailbox still rides 0x2F.
+        Returns ``NO_PEER_APERTURE`` when the die has no outbound window at all.
+        """
+        key = _INBOUND_ALIASES.get(str(which).strip().lower())
+        if key == INBOUND_IPC_MAILBOX and self.peer_aperture_mbox != NO_PEER_APERTURE:
+            return self.peer_aperture_mbox
+        return self.peer_aperture
+
+    def _peer_byte_set(self) -> frozenset:
+        """EVERY outbound peer (D2D) source byte on this die — across all links
+        and BOTH apertures. ``is_peer`` gates on the whole set: if the mailbox
+        aperture (0x42) were not recognised as peer, a doorbell on a down link
+        would escape the FCSM==4 link-up gate and hang the PS bus (H2). Derived
+        from the per-region map + ``d2d_links`` rather than a single hardcoded
+        byte, so link 1 (0x61/0x62) is covered too."""
+        bytes_: set = set()
+        for b in (self.peer_aperture, self.peer_aperture_mbox):
+            if b != NO_PEER_APERTURE:
+                bytes_.add(b & 0xFF)
+        for row in self.d2d_links:
+            for b in row[5:7]:          # (peer_aperture, peer_aperture_mbox)
+                if b is not None and b != NO_PEER_APERTURE:
+                    bytes_.add(b & 0xFF)
+        return frozenset(bytes_)
+
     def is_peer(self, soc_addr: int) -> bool:
-        """True if *soc_addr* falls in this die's outbound peer (D2D) aperture.
+        """True if *soc_addr* falls in ANY of this die's outbound peer (D2D)
+        apertures — every link, and both the SRAM (0x41/0x61) and mailbox
+        (0x42/0x62) source bytes of the second-source-aperture model.
 
         A True here means the access LEAVES THE DIE. Every such access must be
         gated on FCSM==4 first (`hetsoc.safety.require_link_up`) — a peer access
-        on a down link hangs the PS bus.
+        on a down link hangs the PS bus. This gate MUST admit the mailbox byte:
+        a doorbell store rides aperture #2, and an ungated doorbell on a down
+        link is exactly the H2 hang the gate exists to prevent.
         """
-        if self.peer_aperture == NO_PEER_APERTURE:
-            return False
         if isinstance(soc_addr, bool) or not isinstance(soc_addr, int) or soc_addr < 0:
             return False
-        return (soc_addr >> 24) & 0xFF == self.peer_aperture and soc_addr < (1 << 32)
+        peer_bytes = self._peer_byte_set()
+        if not peer_bytes:
+            return False
+        return ((soc_addr >> 24) & 0xFF) in peer_bytes and soc_addr < (1 << 32)
 
     # ------------------------------------------------------------------ #
     def reg(self, offset: int) -> int:
@@ -415,13 +473,22 @@ class Target:
         """SoC address of a TideChart register from its offset."""
         return self.tidechart_base + offset
 
-    def peer(self, offset: int = 0) -> int:
-        """SoC address inside this die's peer aperture, at *offset* into it.
+    def peer(self, offset: int = 0, which: str = INBOUND_SHARED_SRAM) -> int:
+        """SoC address inside this die's peer aperture for region *which*, at
+        *offset* into it.
+
+        *which* selects the SECOND SOURCE APERTURE (spec §6.2):
+        ``"ipc_mailbox"`` forms a mailbox-aperture address (0x42-based on the
+        compute die) so a doorbell rides aperture #2 while SRAM data rides
+        aperture #1; the default ``"shared_sram"`` keeps every existing caller
+        on aperture #1 (0x41 / 0x2F). A die with no second aperture (eth) folds
+        the mailbox back onto aperture #1.
 
         The CAM replaces ``addr[31:24]`` only and passes ``addr[23:0]`` through,
         so *offset* is also the offset into the far-die region the CAM selects.
         """
-        if self.peer_aperture == NO_PEER_APERTURE:
+        src = self._peer_source_byte(which)
+        if src == NO_PEER_APERTURE:
             raise AddressGuardError(
                 "target %r has no peer aperture — this design has no outbound "
                 "die-to-die window, so there is nothing to address." % self.name)
@@ -429,7 +496,7 @@ class Target:
             raise AddressGuardError(
                 "peer offset 0x%X is outside the 16 MB aperture (0..0xFFFFFF). "
                 "The CAM's granularity is one addr[31:24] value." % offset)
-        return (self.peer_aperture << 24) | offset
+        return (src << 24) | offset
 
     def inbound_byte(self, which: str) -> int:
         """Address byte of a far-die inbound target, e.g. ``0x2D``.
@@ -466,8 +533,19 @@ class Target:
                      far_target: Optional["Target"] = None) -> int:
         """CAM rule word mapping THIS die's peer aperture onto the FAR die's *which*.
 
-        The match byte is this (sending) die's peer aperture; the replace byte is
-        the **receiving** die's address byte for that region.
+        The match byte is this (sending) die's source aperture FOR THAT REGION;
+        the replace byte is the **receiving** die's address byte for that region.
+
+        >>> SECOND SOURCE APERTURE (spec §6.2) <<<
+        The match byte now depends on *which*: SRAM leaves via aperture #1
+        (``peer_aperture``, 0x41 on compute) and the mailbox via aperture #2
+        (``peer_aperture_mbox``, 0x42), so a die can reach far SRAM and far
+        mailbox CONCURRENTLY. So on the compute die
+        ``cam_rule_for("shared_sram", far=eth) == 0x002D4101`` (match 0x41) while
+        ``cam_rule_for("ipc_mailbox", far=eth) == 0x00234201`` (match 0x42,
+        replace eth's 0x23) and ``far=compute == 0x002A4201`` (replace compute's
+        0x2A). A die with no second aperture (eth) folds the mailbox back onto
+        aperture #1, so its proven eth words are unchanged (see below).
 
         >>> HETEROGENEOUS PAIRS <<<
         On a homogeneous pair the two are the same descriptor and *far_target*
@@ -482,14 +560,15 @@ class Target:
         Always pass *far_target* for a heterogeneous pair —
         ``ChipletPair.program_cam()`` does it for you.
         """
-        if self.peer_aperture == NO_PEER_APERTURE:
+        match = self._peer_source_byte(which)
+        if match == NO_PEER_APERTURE:
             raise AddressGuardError(
                 "target %r has no peer aperture, so it cannot originate a "
                 "cross-die access. %s"
                 % (self.name,
                    self.provisional_reason or "No outbound D2D window declared."))
         far = self if far_target is None else far_target
-        return regs.cam_rule(self.peer_aperture, far.inbound_byte(which), enable)
+        return regs.cam_rule(match, far.inbound_byte(which), enable)
 
     # ------------------------------------------------------------------ #
     def describe(self) -> str:
@@ -508,16 +587,23 @@ class Target:
                          % (self.window_base, self.window_end - 1))
         lines.append("  tlapb       : SoC 0x%08X" % self.tlapb_base)
         if self.peer_aperture != NO_PEER_APERTURE:
-            lines.append("  peer window : SoC 0x%02X000000 (D2D; requires FCSM=4)"
-                         % self.peer_aperture)
+            mbox = ("" if self.peer_aperture_mbox == NO_PEER_APERTURE
+                    else " + 0x%02X000000 (mailbox aperture #2)"
+                         % self.peer_aperture_mbox)
+            lines.append("  peer window : SoC 0x%02X000000 (D2D; requires FCSM=4)%s"
+                         % (self.peer_aperture, mbox))
         else:
             lines.append("  peer window : none")
         if self.d2d_links:
             lines.append("  d2d links   :")
-            for n, wb, ws, tb, tc, pa in self.d2d_links:
+            for row in self.d2d_links:
+                n, wb, ws, tb, tc, pa = row[:6]
+                pm = row[6] if len(row) > 6 else NO_PEER_APERTURE
+                peers = ("peer 0x%02X" % pa if pm == NO_PEER_APERTURE
+                         else "peer 0x%02X/0x%02X" % (pa, pm))
                 lines.append(
-                    "    %-6s D2D 0x%08X (%d MB)  tlapb 0x%08X  peer 0x%02X  %s"
-                    % (n, wb, ws >> 20, tb, pa,
+                    "    %-6s D2D 0x%08X (%d MB)  tlapb 0x%08X  %s  %s"
+                    % (n, wb, ws >> 20, tb, peers,
                        "tidechart 0x%08X" % tc if tc is not None
                        else "(no tidechart)"))
         if self.inbound_targets:
@@ -662,6 +748,16 @@ _COMPUTE_CHIPLET = Target(
     #   post-decoder value. Confirm 0x41/0x61 with the decoder IN PATH on a real
     #   build before trusting a cross-die transfer.
     peer_aperture=0x41,
+    # SECOND SOURCE APERTURE — LINK 0 (spec SECOND_SOURCE_APERTURE.md §6.2). One
+    # 16 MB peer aperture routes to exactly one far region, so the compute die
+    # gets a SECOND source byte (0x42) + a second CAM rule to reach far-die
+    # ipc_mailbox CONCURRENTLY with far-die shared_sram (which stays on 0x41).
+    # The chiplet_d2d_decode second aperture abuts the first (NUM_PEER_BYTES=2 ->
+    # peer range 0x41..0x42, and 0x61..0x62 on link 1). Inbound already admits
+    # both regions (nanosoc_compute_soc.yaml:1096-1100), so this is sender-side
+    # only. SoC-internal only, like peer_aperture: to_host() stays fail-loud
+    # until G2, so an unconfirmed value cannot wedge a board.
+    peer_aperture_mbox=0x42,
     # C1: G2 landed ps_ahb_s, but ps_m cannot reach d2d0/d2d1. MEASURED
     # 2026-07-30 in sim/het_pair: ps_ahb_s write+read-back to compute
     # shared_sram_0 @0x2D002000 -> 0xa5a5beef (the port works), while
@@ -676,9 +772,9 @@ _COMPUTE_CHIPLET = Target(
     # (tied off, nanosoc_compute_chiplet.sv:656-658). Which link the J21 ribbon
     # lands on is a bench decision; link 0 is the default (it carries TideChart).
     d2d_links=(
-        # name,   d2d window,  size(256MB), tlapb,       tidechart,   peer
-        ("link0", 0x4000_0000, 0x1000_0000, 0x4003_0000, 0x4004_0000, 0x41),
-        ("link1", 0x6000_0000, 0x1000_0000, 0x6003_0000, None,        0x61),
+        # name,   d2d window,  size(256MB), tlapb,       tidechart,   peer, mbox
+        ("link0", 0x4000_0000, 0x1000_0000, 0x4003_0000, 0x4004_0000, 0x41, 0x42),
+        ("link1", 0x6000_0000, 0x1000_0000, 0x6003_0000, None,        0x61, 0x62),
     ),
     bootrom_soc_base=None,          # no verified boot-ROM signature (no bitstream)
     bootrom_expect=(),
@@ -714,15 +810,21 @@ _COMPUTE_CHIPLET = Target(
            "    eth->compute : sram cam_rule(0x2F,0x2D)=0x002D2F01 ; "
            "mailbox cam_rule(0x2F,0x2A)=0x002A2F01\n"
            "    compute->eth : sram cam_rule(0x41,0x2D)=0x002D4101 ; "
-           "mailbox cam_rule(0x41,0x23)=0x00234101\n"
+           "mailbox cam_rule(0x42,0x23)=0x00234201\n"
            "  Build every rule with cam_rule_for(which, far_target=<receiver>); "
            "it takes the replace byte from the RECEIVER. Applying the eth habit "
            "(replace 0x23) to a COMPUTE receiver is INVALID: 0x23 is not in "
            "compute's inbound set {0x2D,0x2A} -> DECERR, and inbound_byte refuses "
            "it structurally (no compute region maps to 0x23).\n"
+           "SECOND SOURCE APERTURE (§6.2): the compute die reaches far SRAM and "
+           "far mailbox AT THE SAME TIME by giving each region its own source "
+           "byte -- SRAM via aperture #1 (0x41/0x61) and mailbox via aperture #2 "
+           "(0x42/0x62), each with its own CAM rule (RULE_0 SRAM, RULE_1 mbox). "
+           "The eth die has one aperture, so its mailbox still rides 0x2F.\n"
            "DUAL LINK: link 0 @0x4000_0000 carries the TideChart and is the "
            "ribbon default; link 1 @0x6000_0000 has none. peer 0x41 / 0x61 are "
-           "the haddr[24]==1 halves (see d2d_links).\n"
+           "the haddr[24]==1 halves; the mailbox apertures 0x42 / 0x62 abut them "
+           "(see d2d_links).\n"
            "0x2E is mgr_remap_0 (a live peripheral) on this die, NOT a TideLink "
            "config window — do not reuse the eth die's 0x2E03_0000."),
 )
@@ -789,8 +891,8 @@ def register_target(target: Target, replace: bool = False) -> Target:
 # provisional target a real window — deliberately, so the value lands in a
 # reviewable file next to a citation rather than in a script literal.
 # =============================================================================
-_INT_FIELDS = ("window_base", "window_size", "peer_aperture", "tlapb_base",
-               "tidechart_base", "bootrom_soc_base")
+_INT_FIELDS = ("window_base", "window_size", "peer_aperture", "peer_aperture_mbox",
+               "tlapb_base", "tidechart_base", "bootrom_soc_base")
 
 
 def target_from_dict(name: str, spec: Mapping, base: Optional[Target] = None) -> Target:
@@ -809,7 +911,8 @@ def target_from_dict(name: str, spec: Mapping, base: Optional[Target] = None) ->
             name=name,
             window_base=base.window_base, window_size=base.window_size,
             inbound_targets=dict(base.inbound_targets),
-            peer_aperture=base.peer_aperture, kind=base.kind,
+            peer_aperture=base.peer_aperture,
+            peer_aperture_mbox=base.peer_aperture_mbox, kind=base.kind,
             tlapb_base=base.tlapb_base, tidechart_base=base.tidechart_base,
             bootrom_soc_base=base.bootrom_soc_base,
             bootrom_expect=tuple(base.bootrom_expect),
@@ -822,7 +925,8 @@ def target_from_dict(name: str, spec: Mapping, base: Optional[Target] = None) ->
         )
     else:
         kwargs = dict(name=name, window_base=0, window_size=0,
-                      inbound_targets={}, peer_aperture=NO_PEER_APERTURE)
+                      inbound_targets={}, peer_aperture=NO_PEER_APERTURE,
+                      peer_aperture_mbox=NO_PEER_APERTURE)
 
     unknown = set(spec) - set(kwargs) - {"inherit"}
     if unknown:

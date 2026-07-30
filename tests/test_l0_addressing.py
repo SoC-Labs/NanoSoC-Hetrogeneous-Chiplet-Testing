@@ -725,3 +725,61 @@ def test_l0_addr_20_eth_die_still_reaches_its_own_d2d_window():
     assert eth.ps_reaches_d2d is True
     assert eth.to_host(0x2E03_2108) == eth.window_base + 0x2E03_2108
     assert eth.to_host(0x2F00_1000) == eth.window_base + 0x2F00_1000
+
+
+# ===========================================================================
+# The second source aperture (SECOND_SOURCE_APERTURE.md §6.2)
+# ===========================================================================
+def test_l0_addr_21_second_source_aperture_reaches_sram_and_mailbox_concurrently():
+    """L0-ADDR-21: the compute die carries a SECOND peer source byte so it can
+    reach far shared_sram AND far ipc_mailbox at the same time.
+
+    A single 16 MB peer aperture rewrites to exactly one far-die region, so the
+    SRAM data plane and the mailbox doorbell would otherwise contend for one
+    aperture. The fix (spec §6.2) is a second source byte (0x42/0x62) with its
+    own CAM rule: SRAM stays on aperture #1 (0x41/0x61 -> 0x2D) while the mailbox
+    rides aperture #2 (0x42/0x62 -> the receiver's mailbox byte).
+
+    is_peer() is the safety gate that forces a peer access onto the FCSM==4
+    link-up check; it MUST admit the mailbox byte, or a doorbell on a down link
+    escapes the gate and hangs the PS bus (H2). 0x43/0x63 must still be refused,
+    the anti-alias boundary having moved up exactly one byte.
+    Pass: both apertures on both links classify as peer; the mailbox CAM rule is
+    receiver-keyed off match 0x42; SRAM is unchanged; 0x43 is not a peer byte.
+    """
+    compute = TARGETS.get("kr260-compute-chiplet")
+    eth = TARGETS.get("kr260-eth-chiplet")
+    if compute is None or eth is None:
+        pytest.skip("both chiplet targets must be registered")
+
+    # Per-link source bytes: SRAM aperture #1 + mailbox aperture #2.
+    link_peer = {row[0]: row[5] for row in compute.d2d_links}
+    link_mbox = {row[0]: row[6] for row in compute.d2d_links}
+    assert link_peer == {"link0": 0x41, "link1": 0x61}
+    assert link_mbox == {"link0": 0x42, "link1": 0x62}
+    assert compute.peer_aperture == 0x41 and compute.peer_aperture_mbox == 0x42
+
+    # is_peer admits BOTH apertures on BOTH links; 0x43/0x63 still fault.
+    for addr in (0x4100_1000, 0x4200_0020, 0x6100_1000, 0x6200_0020):
+        assert compute.is_peer(addr), (
+            "is_peer(0x%08X) must be True — it is a peer aperture and a doorbell "
+            "there must be gated on link-up" % addr)
+    for addr in (0x4300_0000, 0x6300_0000):
+        assert not compute.is_peer(addr), (
+            "0x%08X is not a peer aperture; the decoder still faults it "
+            "(anti-alias). is_peer must not gate it as a peer access." % addr)
+
+    # peer() forms the right source address per region.
+    assert compute.peer(0x20, which=INBOUND_IPC_MAILBOX) == 0x4200_0020
+    assert compute.peer(0x1000) == 0x4100_1000        # default -> aperture #1
+
+    # The mailbox CAM rule is receiver-keyed off match 0x42; SRAM off 0x41.
+    assert compute.cam_rule_for(INBOUND_IPC_MAILBOX, far_target=compute) == 0x002A4201
+    assert compute.cam_rule_for(INBOUND_IPC_MAILBOX, far_target=eth) == 0x00234201
+    assert compute.cam_rule_for(INBOUND_SHARED_SRAM, far_target=eth) == 0x002D4101
+
+    # The eth die keeps ONE aperture (its second aperture is deferred, §9): its
+    # mailbox still rides 0x2F and 0x30 is not a peer byte.
+    assert eth.peer_aperture_mbox == NO_PEER_APERTURE
+    assert eth.cam_rule_for(INBOUND_IPC_MAILBOX) == 0x00232F01
+    assert not eth.is_peer(0x3000_0000)
