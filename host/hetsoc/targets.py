@@ -742,17 +742,18 @@ _BARE_LINK = Target(
 _COMPUTE_CHIPLET = Target(
     name="kr260-compute-chiplet",
     # PS BACKDOOR WINDOW — PENDING G2 (docs/BRINGUP_GAPS.md §G2, HARD STOP, in
-    # progress). Compute has no PS-backdoor port yet: no eth_ss_0 analogue, no
-    # bitstream, no .hwh. This base is the PLANNED MIRROR of the eth backdoor
-    # (eth lands at PS phys 0x4_0000_0000 + HADDR, tidelink.hwh:4112) — an
-    # HPM0_FPD high aperture the compute port is expected to match. It is
-    # recorded, not invented, but window_size STAYS 0 so `resolved` is False and
-    # to_host() fails loud on EVERY address. Do NOT set window_size here: the
-    # base must be CONFIRMED against the built .hwh once the G2 backdoor lands,
-    # and the only sanctioned way to resolve it is a cited hetsoc.toml override
-    # (target_from_dict enforces a non-TBD `source`).
-    window_base=0x4_0000_0000,      # PLANNED mirror of eth; pending G2 .hwh
-    window_size=0,                  # 0 == unresolved -> to_host() fails loud
+    # progress). UPDATE 2026-07-31: G1/G2 landed — the KR260 bitstream IS BUILT
+    # (kr260-compute-chiplet + -flip, write_bitstream Complete, 0 critical
+    # warnings) and its .hwh CONFIRMS this base: MEMRANGE nanosoc_compute_chiplet_0
+    # C_BASEADDR 0x400000000-0x4FFFFFFFF (== eth's PS phys 0x4_0000_0000 + HADDR,
+    # an HPM0_FPD high aperture). The base is now confirmed, not planned. But
+    # window_size DELIBERATELY STAYS 0 here so the SHIPPED registry `resolved` is
+    # False and to_host() fails loud on a fresh checkout: the sanctioned way to
+    # de-provisionalise is a cited hetsoc.toml override against a bench's own built
+    # .hwh (target_from_dict enforces a non-TBD `source`). See hetsoc.toml.example
+    # [target.kr260-compute-chiplet] for the ready-to-use resolution.
+    window_base=0x4_0000_0000,      # CONFIRMED from built .hwh (was planned mirror)
+    window_size=0,                  # 0 == unresolved -> resolve via cited toml override
     # FOUND, cited: nanosoc_compute_soc.yaml:1008 shared_sram_0 @0x2D000000;
     # :989 ipc_mailbox_0 @0x2A000000. d2d0_m / d2d1_m each reach EXACTLY these
     # two (:1091-1100) — the same "exactly two inbound" property the eth die has;
@@ -811,18 +812,20 @@ _COMPUTE_CHIPLET = Target(
     bootrom_soc_base=None,          # no verified boot-ROM signature (no bitstream)
     bootrom_expect=(),
     roles=("die_a", "die_b"),
-    provisional=True,               # window unresolved until G2 -> still provisional
+    provisional=True,               # SHIPPED registry stays fail-loud; resolve via toml
     provisional_reason=(
-        "the NanoSoC Compute Chiplet has NO FPGA/KR260 port yet (G1/G2, HARD "
-        "STOP): no bitstream, no .hwh, and no external AHB pad group on the chip "
-        "boundary, so the PS-backdoor window base cannot be CONFIRMED. window_base "
-        "here is the PLANNED mirror of eth's 0x4_0000_0000 aperture; window_size "
-        "stays 0 so to_host() refuses every address until the built .hwh confirms "
-        "the base (resolve via a cited hetsoc.toml override). The SoC-internal map "
-        "(inbound bytes, per-link TideLink/TideChart bases, the 0x41/0x61 peer "
-        "apertures) IS carried — it never reaches /dev/mem — but 0x41/0x61 is the "
-        "post-G4 INTENDED value, not yet verified with the decoder in path. It "
-        "also has TWO D2D links, so a bench must say WHICH link the ribbon uses"),
+        "SHIPPED-DEFAULT fail-loud, NOT a missing port: the compute KR260 bitstream "
+        "IS built (2026-07-31, kr260-compute-chiplet + -flip) and its .hwh confirms "
+        "window_base 0x4_0000_0000 (MEMRANGE nanosoc_compute_chiplet_0 C_BASEADDR "
+        "0x400000000-0x4FFFFFFFF). window_size is kept 0 in the registry so a fresh "
+        "checkout to_host() refuses every address until a bench RESOLVES it with a "
+        "cited hetsoc.toml override against its own built .hwh (see "
+        "hetsoc.toml.example [target.kr260-compute-chiplet], ready to use). The "
+        "SoC-internal map (inbound bytes, per-link TideLink/TideChart bases, the "
+        "0x41/0x61 peer apertures) IS carried — it never reaches /dev/mem — but "
+        "0x41/0x61 is the post-G4 INTENDED value, not yet verified with the decoder "
+        "in path (moot for eth->compute, where compute does not originate). It also "
+        "has TWO D2D links, so a bench must say WHICH link the ribbon uses"),
     source=("NanoSoC-Compute-Chiplet: nanosoc-compute-system/sys_desc/"
             "nanosoc_compute_soc.yaml:989,1008,1017,1018,1091-1100 (inbound + D2D "
             "windows); src/rtl/nanosoc_compute_chiplet.sv:498,525,665 (2x "
@@ -830,10 +833,15 @@ _COMPUTE_CHIPLET = Target(
             "off); src/rtl/chiplet_d2d_decode.sv:41-49,113-114,138 (haddr[24] "
             "split -> peer 0x41/0x61). docs/BRINGUP_GAPS.md §G4 (peer aperture), "
             "§G5 (APB base), §G7 (mailbox 0x2A). "
-            "WINDOW BASE: pending G2 — planned mirror of eth 0x4_0000_0000, TBD "
-            "until confirmed against the built .hwh"),
-    notes=("PENDING BITSTREAM (G2): window_base is the planned eth mirror, "
-           "window_size=0, so to_host() fails loud; boot-ROM signature unknown.\n"
+            "WINDOW BASE: confirmed 2026-07-31 against the canonical build "
+            "(NanoSoC-Compute-Chiplet/tidelink/imp/fpga/output/kr260-compute-chiplet/"
+            "tidelink.hwh MEMRANGE nanosoc_compute_chiplet_0 C_BASEADDR "
+            "0x400000000-0x4FFFFFFFF, tidelink 74c6777). Each bench must STILL cite "
+            "its OWN build's .hwh in the hetsoc.toml override (the safety gate keys "
+            "on this) — per-bench source TBD"),
+    notes=("BITSTREAM BUILT (G1/G2, 2026-07-31): window_base confirmed from .hwh; "
+           "window_size kept 0 in the registry so a fresh checkout fails loud — "
+           "resolve via the cited hetsoc.toml override. Boot-ROM signature unknown.\n"
            "PER-DIRECTION CAM (G7) — the CAM rewrites addr[31:24] on the SENDER "
            "to the RECEIVER's byte, so rules are directional. shared_sram agrees "
            "(0x2D) both ways; the mailbox does NOT (0x2A compute vs 0x23 eth, "
@@ -955,6 +963,13 @@ def target_from_dict(name: str, spec: Mapping, base: Optional[Target] = None) ->
             bootrom_expect=tuple(base.bootrom_expect),
             apertures=tuple(base.apertures),
             d2d_links=tuple(base.d2d_links),
+            # ps_reaches_d2d MUST be carried from base: a hetsoc.toml override that
+            # only resolves the window (e.g. the compute die) would otherwise reset
+            # it to the dataclass default True, wrongly telling the harness the PS
+            # backdoor can reach d2d/CAM/role regs. On the compute die that is a
+            # MEASURED False (ps_m excludes d2d0/d2d1) — losing it sends a receiver
+            # die chasing all-zero CAM/role reads as a phantom down-link.
+            ps_reaches_d2d=base.ps_reaches_d2d,
             provisional=base.provisional,
             provisional_reason=base.provisional_reason,
             deploy_action=base.deploy_action, roles=tuple(base.roles),
@@ -963,7 +978,7 @@ def target_from_dict(name: str, spec: Mapping, base: Optional[Target] = None) ->
     else:
         kwargs = dict(name=name, window_base=0, window_size=0,
                       inbound_targets={}, peer_aperture=NO_PEER_APERTURE,
-                      peer_aperture_mbox=NO_PEER_APERTURE)
+                      peer_aperture_mbox=NO_PEER_APERTURE, ps_reaches_d2d=True)
 
     unknown = set(spec) - set(kwargs) - {"inherit"}
     if unknown:

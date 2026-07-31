@@ -21,10 +21,12 @@
 # -----------------------------------------------------------------------------
 [pair.default]
 # The heterogeneous pair this repo exists to test: eth chiplet <-> compute
-# chiplet. NOTE the compute side cannot run yet — see [target.*] below.
+# chiplet. Compute's KR260 bitstream is now BUILT and the target is resolved (see
+# [target.kr260-compute-chiplet] below). DIRECTION: eth is die_a and ORIGINATES;
+# compute is die_b and RECEIVES only (its PS backdoor cannot master off-die — H2).
 a = "eth"
 b = "compute"
-description = "eth chiplet (die_a) <-> compute chiplet (die_b) over J21"
+description = "eth chiplet (die_a, originator) -> compute chiplet (die_b, receiver) over J21"
 
 [pair.eth-homogeneous]
 # The pair that IS proven on silicon (2026-07-27..29): eth die_a <-> eth die_b.
@@ -71,31 +73,33 @@ role = "die_b"
 # deliberately, so a value that can wedge a board lands in a reviewable file
 # next to its citation instead of in a script literal.
 #
-# >>> THE COMPUTE CHIPLET IS UNRESOLVED — AND MUST STAY THAT WAY FOR NOW <<<
-# There is no FPGA/KR260 port for the compute chiplet: no bitstream, no .hwh,
-# and no external AHB pad group on the chip boundary at all, so there is no
-# PS-visible backdoor window. `kr260-compute-chiplet.to_host()` therefore raises
-# ProvisionalTargetError on every call — by design. Do NOT paper over it by
-# copying the eth chiplet's 0x4_0000_0000: a guessed window base on ZynqMP is an
-# unrecoverable AXI hang (JTAG POR only).
+# >>> COMPUTE CHIPLET: KR260 BITSTREAM BUILT 2026-07-31 — window CONFIRMED <<<
+# kr260-compute-chiplet (die_b) + kr260-compute-chiplet-flip (die_a) both build
+# clean (write_bitstream Complete, 0 critical warnings, WNS +12.30ns). The PS
+# backdoor window base is now CONFIRMED from the built .hwh (no longer a guess),
+# so the block below carries REAL values + citation. It STAYS COMMENTED so copying
+# this template can't silently apply a window override to the wrong board —
+# UNCOMMENT it (or put it in your own hetsoc.toml) when you actually run the pair.
+# See docs/ETH_COMPUTE_BRINGUP.md.
 #
-# When the port exists, uncomment and fill in from the REAL .hwh MEMRANGE — and
-# note `source` is mandatory: hetsoc refuses to de-provisionalise a target whose
-# provenance still says TBD.
-#
+# RECEIVE-ONLY over the PS backdoor. ps_m (the PS host initiator) deliberately
+# EXCLUDES d2d0/d2d1 (H2 down-link safety, nanosoc_compute_soc.yaml:1106-1123), so
+# the compute PS CANNOT originate a peer write or program its own CAM — MEASURED
+# ps_reaches_d2d=False (2026-07-30 het_pair sim). Drive the pair
+# eth(die_a) -> compute(die_b): eth originates; compute RECEIVES into shared_sram
+# (0x2D) / ipc_mailbox (0x2A) and reads it back through its own PS window (ps_m DOES
+# reach shared_sram). compute->eth is NOT possible without lifting the H2 gate.
 # [target.kr260-compute-chiplet]
-# window_base = 0x400000000        # <- from the built bitstream's .hwh, not by analogy
-# window_size = 0x100000000
-# peer_aperture = 0x41             # <- UNRESOLVED today: the repo's docs/tests say
-#                                  #    0x40, but chiplet_d2d_decode's `a_peer =
-#                                  #    haddr[24]` puts it at 0x41 and the tests
-#                                  #    bypass that decoder. Reconcile first.
-# tlapb_base = 0x40030000          # DERIVED (d2d0 window + blk==3); re-verify
-# bootrom_expect = [0x18003c00]    # <- read off real silicon, do not assume
-# source = "compute .hwh MEMRANGE line <file:line>; decoder <file:line>"
+# window_base = 0x400000000        # .hwh MEMRANGE, CONFIRMED (not by analogy)
+# window_size = 0x100000000        # 4 GiB high aperture -> de-provisionalises to_host()
+# source = "NanoSoC-Compute-Chiplet/tidelink/imp/fpga/output/kr260-compute-chiplet/tidelink.hwh MEMRANGE INSTANCE=nanosoc_compute_chiplet_0 C_BASEADDR BASEVALUE=0x400000000 HIGHVALUE=0x4FFFFFFFF (built 2026-07-31, tidelink 74c6777); peer 0x41 = chiplet_d2d_decode.sv haddr[24] split; ps_reaches_d2d=False measured 2026-07-30 het_pair sim"
 #
-# The compute die also has TWO D2D links (d2d0 @0x4000_0000, d2d1 @0x6000_0000).
-# The descriptor must say which one the J21 ribbon lands on.
+# peer_aperture (0x41), tlapb_base (0x40030000), inbound bytes (SRAM 0x2D / mbox
+# 0x2A), d2d_links, roles, and ps_reaches_d2d=False are INHERITED from the registry
+# descriptor (host/hetsoc/targets.py) — do not repeat them here. Link 0 (which
+# carries the TideChart) is the J21 default; link 1 is tied off. NOTE: peer 0x41 is
+# the post-G4 INTENDED value; it only matters if compute originates (it does not in
+# eth->compute), so it stays unverified-in-path but harmless for this pairing.
 
 # -----------------------------------------------------------------------------
 # Defaults applied to every board unless the board overrides them.

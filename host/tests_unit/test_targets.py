@@ -399,10 +399,14 @@ class TestProvisionalComputeTarget:
         return get_target(COMPUTE)
 
     def test_it_is_marked_provisional_with_a_reason(self, target):
+        # The KR260 bitstream + .hwh now exist (2026-07-31), so the descriptor is
+        # no longer provisional for lack of a port. The registry STILL ships it
+        # fail-loud (window_size=0) so a fresh checkout refuses every address until
+        # a bench resolves the window via a cited hetsoc.toml override.
         assert target.provisional is True
         assert target.resolved is False
-        assert "no FPGA/KR260 port" in target.provisional_reason.lower() \
-            or "NO FPGA/KR260 port" in target.provisional_reason
+        reason = target.provisional_reason.lower()
+        assert "fail-loud" in reason and "hetsoc.toml" in reason
 
     def test_every_address_translation_fails_loud(self, target):
         for soc_addr in (0x0, 0x2E032108, 0x2D000000, 0x40030000):

@@ -53,12 +53,19 @@ ETH_FPGA_DIR="${HETSOC_ETH_CHIPLET}/tidelink/fpga"
 COMPUTE_FPGA_DIR="${HETSOC_COMPUTE_CHIPLET}/tidelink/fpga"
 
 # TARGET names are TideLink fpga/targets/ entries. The eth die's targets are
-# proven (kr260-eth-chiplet / -flip). The compute die's equivalent is not built
-# yet — see docs/BRINGUP_GAPS.md — so it is a variable, not a constant, and the
-# flow tells you plainly when it is missing rather than deploying the wrong
-# bitstream to a board.
+# proven (kr260-eth-chiplet / -flip). The compute die's targets ARE NOW BUILT
+# (2026-07-31, write_bitstream Complete, 0 critical warnings, WNS +12.30ns).
+#
+# NAMING GOTCHA — the compute chiplet's "flip" is INVERTED vs the eth chiplet's:
+#   eth:      kr260-eth-chiplet      = die_a (straight balls),  -flip = die_b (mirrored)
+#   compute:  kr260-compute-chiplet  = die_b (MIRRORED balls),  -flip = die_a (straight)
+# i.e. compute's `-flip` is die_a (its balls match eth die_a), and the NON-flip
+# kr260-compute-chiplet is die_b. So for the eth(die_a) -> compute(die_b) pair the
+# compute side is the NON-flip target. (Verified: compute die_b fwd-clock TX=AC14
+# RX=AD15 is the exact complement of eth die_a, so a straight J21 ribbon crosses
+# TX<->RX correctly.)
 ETH_TARGET_A="${HETSOC_ETH_TARGET_A:-kr260-eth-chiplet}"
-COMPUTE_TARGET_B="${HETSOC_COMPUTE_TARGET_B:-kr260-compute-chiplet-flip}"
+COMPUTE_TARGET_B="${HETSOC_COMPUTE_TARGET_B:-kr260-compute-chiplet}"
 
 banner() {
     printf '%s' "${C_YEL}"
@@ -91,9 +98,9 @@ deploy_one() {
     if [ ! -d "${fpga_dir}/targets/${target}" ]; then
         err "${role}: TideLink target '${target}' does not exist in ${fpga_dir}/targets/"
         err "       Available: $(find "${fpga_dir}/targets" -mindepth 1 -maxdepth 1 -type d -printf '%f ' 2>/dev/null)"
-        err "       For the compute die this is expected today — the het-pair"
-        err "       bitstream has not been built. See docs/BRINGUP_GAPS.md."
-        err "       Override with HETSOC_COMPUTE_TARGET_B=<target> once it exists."
+        err "       The compute die's targets ARE built: kr260-compute-chiplet (die_b),"
+        err "       kr260-compute-chiplet-flip (die_a). For eth(die_a)->compute(die_b),"
+        err "       die_b is the NON-flip: HETSOC_COMPUTE_TARGET_B=kr260-compute-chiplet."
         return 1
     fi
 
