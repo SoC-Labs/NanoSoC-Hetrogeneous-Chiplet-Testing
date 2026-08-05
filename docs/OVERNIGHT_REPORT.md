@@ -1,5 +1,28 @@
 # Overnight run — report
 
+> ## ⚠️ SUPERSEDED IN PART — read this first  [2026-08-05]
+>
+> This is a **dated record of the 2026-07-29/30 run** and is kept as written.
+> Four of its conclusions have since been overtaken by measurement. It is not
+> rewritten, because a run report that quietly changes is worse than one with a
+> correction notice — but do not action §6 from this file.
+>
+> | This report says | Now known |
+> |---|---|
+> | §6 rank 1: **"C1 — add `d2d0`/`d2d1` to `ps_m`, ~2 lines, cheapest unblock"** | **Wrong on both counts.** C1 is `H2`, a *deliberate* down-link safety property (`nanosoc_compute_soc.yaml:1106-1109`) — not a defect. And it is **not sufficient**: `F7` shows the compute die has no armed role-lock route at all, so the link cannot start even with `ps_m` routed. See `FPGA_TEST_PROGRAMME.md` §0.1 and `tests/test_l0_build.py::L0-BUILD-01`. |
+> | §6 rank 6: **G1 compute KR260 bitstream, "3–6 wk, does not exist"** | **Closed.** Built 2026-07-31. Note its quoted WNS **excludes the D2D interface** — `pad_clk_tx_0_fwd` times zero endpoints — so that number says nothing about the link. |
+> | §3: the return path needs firmware as a large new task | **Overtaken.** The compute firmware tree is **built** (`bootrom/spl/app/manager/manager_stage1.elf`, post-2026-08-01) and `manager_stage1/main.c` already references `ROLE_CFG`, `d2d0`, `d2d0_ahb_m`. H2 constrains `ps_m` only; `manager_m`/`compute_m`/`dma_250_0_m` all reach `d2d0`. |
+> | Throughout: **"on silicon"** | **Nothing is fabricated.** In these repos "silicon" means the KR260 **FPGA** pair; eth's `ASIC/genus-innovus/outputs/` is empty. The usage was inherited from the repo docs and is misleading. |
+>
+> Also since: a **second hard stop** — both compute images pair one role's ball
+> map with the other role's strap, so one pairing gives two masters and the other
+> gives two drivers per ribbon conductor. **Do not deploy either compute image
+> against eth die_a until rebuilt** (`L0-BUILD-04`/`L0-BUILD-05`).
+>
+> Current state lives in [`CHIPLET_ALIGNMENT_AUDIT.md`](CHIPLET_ALIGNMENT_AUDIT.md),
+> [`FPGA_TEST_PROGRAMME.md`](FPGA_TEST_PROGRAMME.md) and
+> [`SYSTEM_APPLICATION_PROPOSAL.md`](SYSTEM_APPLICATION_PROPOSAL.md).
+
 **Run:** 2026-07-29 23:06 → 2026-07-30 08:2x. Plan: [`OVERNIGHT_PLAN.md`](OVERNIGHT_PLAN.md).
 **Result:** all five phases executed. One gate partial, one blocked — both with a
 named cause, neither force-fixed.

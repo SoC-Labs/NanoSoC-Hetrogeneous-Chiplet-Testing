@@ -1,5 +1,37 @@
 # Bring-up gaps — what blocks the heterogeneous pair
 
+> ## ⚠️ STATUS REVISED  [2026-08-05] — 9 of the 17 gaps are CLOSED
+>
+> This list was written 2026-07-29, when neither die had a usable pairing and
+> the compute chiplet had no FPGA flow. Much of it has been walked. The full
+> reconciliation — which gap is closed, open, partial or mis-scoped, with
+> evidence — is in [`CHIPLET_ALIGNMENT_AUDIT.md`](CHIPLET_ALIGNMENT_AUDIT.md);
+> the headline:
+>
+> - **The documented critical path `G1 → G2 → G3 → G4 → G5` has been fully
+>   walked.** G1 (compute KR260 bitstream) closed 2026-07-31; G2 (PS backdoor)
+>   closed by `ps_ahb_s`; G4 (window/decode) closed by the `WINDOW_BASE`
+>   parameterisation; G5 (APB base) resolved to `0x4003_0000`.
+> - **The new critical path is `G6 → C-1`** — G6 is *re-opened* and rated **S**.
+>   A strap driver now exists; it is wired to the wrong constant.
+> - **G3 was mis-scoped.** The two TideLink revisions are *wire-compatible*
+>   (identical ports, framing, CAM, CRC, FCSM encodings); the divergence that
+>   matters is configuration, not protocol.
+> - **G12 is symmetric, not an asymmetry** — no shipped image carries the FC
+>   recovery fixes; both dies were built V1.
+>
+> **Two blockers not in this list at all**, both found 2026-08-05 and both fixed
+> by one compute rebuild:
+> - **F7** — the compute die has no armed role-lock route, so the link cannot
+>   reach FCSM=4. `SELF_ARM_TRAIN_EN` defaults `1'b0` and compute never
+>   overrides it; eth does.
+> - **H6** — each compute image pairs one role's ball map with the other role's
+>   strap. One pairing gives two masters; the other drives two outputs onto every
+>   ribbon conductor.
+>
+> Both are now caught offline by `tests/test_l0_build.py` (`L0-BUILD-01/04/05`).
+> **Do not book bench time on the het pair until `L0-BUILD-01` passes.**
+
 **Question:** what must exist before the NanoSoC **Ethernet** Chiplet and the
 NanoSoC **Compute** Chiplet can run as a pair on two KR260s?
 
