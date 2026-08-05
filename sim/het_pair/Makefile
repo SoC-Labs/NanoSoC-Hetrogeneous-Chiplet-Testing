@@ -128,6 +128,35 @@ check-tools:
 # persists across the flatten/resolve steps AND so the two chiplets' conflicting
 # exports never meet.
 # =============================================================================
+
+# =============================================================================
+# UPSTREAM FLIST GAP BACKFILL (eth tidelink 7fb7c37).
+#
+# `local_overrides/Wlink.v` instantiates `tidelink_winscan_obs` and
+# `tidelink_fcemit_obs`, but those sources are listed ONLY in
+# `tidelink_fpga_v2.flist` — not in `tidelink_fpga.flist`, which is what this
+# sim AND the eth chiplet's own builds resolve. So the V1 flist is internally
+# inconsistent at that pin, and elaboration dies late with
+#     Error-[CFCILFBI] Cannot find cell in liblist ... 'tidelink_fcemit_obs'
+# naming a CELL, not the missing file — the same misleading shape as the
+# WavResetSync case in docs/SIM_PLAN.md §10a.
+#
+# Backfilled here rather than patched upstream: this repo does not own the
+# chiplet trees. Appends only files that EXIST and are not already listed, so
+# it is a no-op once the upstream flist is corrected. Report to the TideLink /
+# eth-chiplet owners — the same gap presumably affects their V1 FPGA builds.
+# =============================================================================
+define backfill_obs_cells
+	added=0; \
+	for f in $(2)/src/rtl/tidelink_winscan_obs.sv \
+	         $(2)/src/rtl/tidelink_fcemit_obs.sv; do \
+	    if [ -f "$$f" ] && ! grep -qF "$$(basename $$f)" "$(1)"; then \
+	        echo "$$f" >> "$(1)"; added=$$((added+1)); \
+	    fi; \
+	done; \
+	[ "$$added" = "0" ] || echo "   backfilled $$added obs cell(s) missing from the V1 flist -> $(notdir $(1))"
+endef
+
 .PHONY: flists
 flists: check-tools
 	@mkdir -p "$(BUILD)"
@@ -139,7 +168,8 @@ flists: check-tools
 	python3 "$(ETH_CHIPLET_HOME)/flist/flatten_soc_flist.py" \
 	    "$${NANOSOC_MULTICORE_HOME}/flist/nanosoc_multicore.flist" > "$(ETH_SOC_F)" && \
 	python3 "$(ETH_CHIPLET_HOME)/flist/resolve_tidelink_flist.py" \
-	    "$${TIDELINK_HOME}/flists/tidelink_fpga.flist" > "$(ETH_TL_F)"
+	    "$${TIDELINK_HOME}/flists/tidelink_fpga.flist" > "$(ETH_TL_F)" && \
+	$(call backfill_obs_cells,$(ETH_TL_F),$${TIDELINK_HOME})
 	@echo "== preparing compute-chiplet flists =="
 	@set -e; \
 	source "$(COMPUTE_CHIPLET_HOME)/set_env.sh" >/dev/null && \
@@ -168,7 +198,8 @@ flists: check-tools
 	python3 "$(COMPUTE_CHIPLET_HOME)/flist/flatten_soc_flist.py" \
 	    "$${SOCLABS_NANOSOC_SOC_DIR}/compute_soc.flist" > "$(CMP_SOC_F)" && \
 	python3 "$(COMPUTE_CHIPLET_HOME)/flist/resolve_tidelink_flist.py" \
-	    "$${TIDELINK_HOME}/flists/tidelink_fpga.flist" > "$(CMP_TL_F)"
+	    "$${TIDELINK_HOME}/flists/tidelink_fpga.flist" > "$(CMP_TL_F)" && \
+	$(call backfill_obs_cells,$(CMP_TL_F),$${TIDELINK_HOME})
 	@echo "flists: prepared $(ETH_SOC_F) $(ETH_TL_F) $(CMP_SOC_F) $(CMP_TL_F)"
 
 # =============================================================================

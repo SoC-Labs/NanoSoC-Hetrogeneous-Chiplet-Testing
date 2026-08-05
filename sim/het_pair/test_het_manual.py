@@ -53,6 +53,13 @@ from test_het_pair import (  # noqa: E402
     APB_ROLE_CFG, Pair, _i,
 )
 
+# IPC mailbox slot-0 layout (nanosoc_multicore_addrmap.h, mirrored in
+# kr260_eth_xfer.py:65-69). Identical on both dies — only the BASE byte differs
+# (eth 0x23, compute 0x2A).
+IPC_SLOT0_DATA = 0x000        # .. +0x00C, four words
+IPC_SLOT0_CTRL = 0x020        # [0] = MSG_VALID, [1] = ACK
+IPC_MSG_VALID = 1 << 0
+
 # ROLE_CFG bit map (axi_chiplet_controller.sv:338-339):
 #   bit[0] role_cfg_reg  — 0 = master, 1 = slave
 #   bit[1] role_lock_reg — W1S, POR-only clear
@@ -238,18 +245,52 @@ async def test_manual_mailbox_uses_compute_byte(dut):
     cocotb.start_soon(tb.catch_compute_inbound())
 
     await tb.program_eth_cam(APERTURE_BYTE, C_INBOUND_MAILBOX, enable=True)
-    await tb.e.write((APERTURE_BYTE << 24) | 0x000000, PAYLOAD)
+    base = (APERTURE_BYTE << 24)
+
+    # The REAL mailbox protocol, not just one write: four payload words, then
+    # the doorbell. Earlier this test wrote a single word at offset 0 and
+    # stopped, which is why it never caught the defect below.
+    words = [PAYLOAD ^ (i * 0x1111_1111) for i in range(4)]
+    for i, w in enumerate(words):
+        await tb.e.write(base + IPC_SLOT0_DATA + 4 * i, w)
+    await tb.e.write(base + IPC_SLOT0_CTRL, IPC_MSG_VALID)   # <- the doorbell
     await ClockCycles(dut.sys_fclk, 4000)
 
-    inbound = tb.observe_compute_inbound()
+    beats = tb.beats()
     dut._log.info(f"compute inbound beats = {tb.fmt_beats()}")
-    assert (inbound >> 24) == C_INBOUND_MAILBOX, (
-        f"compute inbound saw 0x{inbound:08x}; expected upper byte "
-        f"0x{C_INBOUND_MAILBOX:02x}")
     assert not tb.saw_error_response(), (
         f"the compute die ERRORed a write to 0x{C_INBOUND_MAILBOX:02X}, which IS "
         f"in its inbound target set — a real fault. beats={tb.fmt_beats()}")
-    dut._log.info(f"mailbox OK via 0x{C_INBOUND_MAILBOX:02X}")
+
+    landed = {a & 0xFFFF: d for a, d, _e in beats}
+    for i, w in enumerate(words):
+        off = IPC_SLOT0_DATA + 4 * i
+        assert landed.get(off) == w, (
+            f"slot-0 word {i} @+0x{off:03X}: saw 0x{landed.get(off, 0):08x}, "
+            f"wrote 0x{w:08x}")
+
+    # THE DOORBELL. This is an ISOLATED single write following a burst, and it
+    # is the bit the receiver actually waits on: without MSG_VALID the far side
+    # never knows a message arrived, so a "passing" mailbox test that omits it
+    # proves only that bytes moved, not that the IPC works.
+    #
+    # docs/CHIPLET_ALIGNMENT_AUDIT.md reports that isolated D2D writes deliver
+    # 0x00000000. If that holds here the assertion below fires with the observed
+    # value, which is the evidence needed either way.
+    doorbell = landed.get(IPC_SLOT0_CTRL)
+    assert doorbell is not None, (
+        f"the doorbell write to +0x{IPC_SLOT0_CTRL:03X} never reached the "
+        f"compute inbound port at all. beats={tb.fmt_beats()}")
+    assert doorbell & IPC_MSG_VALID, (
+        f"the doorbell arrived as 0x{doorbell:08x}, MSG_VALID clear — the "
+        f"receiver will never see the message. Expected bit0 set "
+        f"(wrote 0x{IPC_MSG_VALID:08x}).\n"
+        "  If this reads 0x00000000 it is the isolated-D2D-write defect in "
+        "docs/CHIPLET_ALIGNMENT_AUDIT.md: the data burst lands but the lone "
+        "following write delivers zeros.\n"
+        f"  beats={tb.fmt_beats()}")
+    dut._log.info(f"mailbox OK via 0x{C_INBOUND_MAILBOX:02X}: 4 words + "
+                  f"doorbell 0x{doorbell:08x}")
 
 
 @cocotb.test(timeout_time=90, timeout_unit="ms")
@@ -543,3 +584,40 @@ async def test_l0_sim_17_far_die_dark_does_not_wedge_the_near_die(dut):
         f"(read 0x{rb2:08x})")
     dut._log.info("far-die-dark OK: die E fully usable, no false link-up, "
                   "TX gate held")
+
+
+@cocotb.test(timeout_time=90, timeout_unit="ms")
+async def test_diag_lone_d2d_write_delivers(dut):
+    """DIAG: does a SINGLE isolated cross-die write deliver its data?
+
+    docs/CHIPLET_ALIGNMENT_AUDIT.md reports that isolated D2D writes deliver
+    0x00000000, citing the compute repo's own failing mailbox test. The
+    strengthened L0-SIM-05 does NOT reproduce it — but there the doorbell
+    follows a four-word burst, so it is not isolated in the sense that matters.
+
+    This is the discriminating case: one write, nothing before it, into a
+    freshly brought-up link. If the defect is real this is where it shows."""
+    tb = ManualPair(dut)
+    await tb.bring_up_manual()
+    tb.assert_link_idle()
+    cocotb.start_soon(tb.catch_compute_inbound())
+
+    await tb.program_eth_cam(APERTURE_BYTE, C_INBOUND_MAILBOX, enable=True)
+    # A LONE write to the doorbell offset. No data words, no warm-up.
+    await tb.e.write((APERTURE_BYTE << 24) | IPC_SLOT0_CTRL, IPC_MSG_VALID)
+    await ClockCycles(dut.sys_fclk, 4000)
+
+    beats = tb.beats()
+    dut._log.info(f"LONE-WRITE beats = {tb.fmt_beats()}")
+    landed = {a & 0xFFFF: d for a, d, _e in beats}
+    got = landed.get(IPC_SLOT0_CTRL)
+    if got is None:
+        dut._log.info("LONE-WRITE RESULT: the write never reached the inbound "
+                      "port at all")
+    elif got != IPC_MSG_VALID:
+        dut._log.info(f"LONE-WRITE RESULT: DEFECT REPRODUCED — delivered "
+                      f"0x{got:08x}, wrote 0x{IPC_MSG_VALID:08x}")
+    else:
+        dut._log.info(f"LONE-WRITE RESULT: delivered correctly (0x{got:08x}) — "
+                      "the isolated-write defect does NOT reproduce on the het "
+                      "pair in this posture")
