@@ -12,7 +12,7 @@ independent: **an id shared by both is not necessarily the same test.**
 | | count |
 |---|---:|
 | plan ids (matrix rows) | 139 |
-| implemented ids (pytest) | 80 |
+| implemented ids (pytest) | 86 |
 | shared id strings | 31 |
 | — of which **divergent** ⚠️ | **23** |
 | — of which plausibly the same | 8 |
@@ -183,7 +183,7 @@ the matrix covers levels and blocked items that are not yet written.
 
 ## Implemented, not in the matrix
 
-49 pytest ids have no matrix row — the matrix should gain one.
+55 pytest ids have no matrix row — the matrix should gain one.
 
 | id | implementation says | file |
 |---|---|---|
@@ -205,6 +205,12 @@ the matrix covers levels and blocked items that are not yet written.
 | `L0-BUILD-04` | each image's role strap must match the role it is deployed as | [tests/test_l0_build.py](../tests/test_l0_build.py) |
 | `L0-BUILD-05` | die A's TX conductors must be die B's RX conductors | [tests/test_l0_build.py](../tests/test_l0_build.py) |
 | `L0-BUILD-07` | both dies must instantiate the same NUM_PHY_LANES.""" | [tests/test_l0_build.py](../tests/test_l0_build.py) |
+| `L0-KERN-01` | the FFT is correct against hand-computable cases | [tests/test_l0_kernel.py](../tests/test_l0_kernel.py) |
+| `L0-KERN-02` | a pure DC offset must not dominate band 0 | [tests/test_l0_kernel.py](../tests/test_l0_kernel.py) |
+| `L0-KERN-03` | same input -> same Result, and it fits the 32 B record.""" | [tests/test_l0_kernel.py](../tests/test_l0_kernel.py) |
+| `L0-KERN-04` | an unimplemented kernel must raise, never score as correct | [tests/test_l0_kernel.py](../tests/test_l0_kernel.py) |
+| `L0-KERN-05` | ★ the scorer must be able to FAIL | [tests/test_l0_kernel.py](../tests/test_l0_kernel.py) |
+| `L0-KERN-06` | a stale-slot result must be rejected on job_id, not scored | [tests/test_l0_kernel.py](../tests/test_l0_kernel.py) |
 | `L0-RING-01` | the pre-FCS frame is 546 B, per §3.1 | [tests/test_l0_jobring.py](../tests/test_l0_jobring.py) |
 | `L0-RING-02` | parse(build(job)) preserves every field, signs included.""" | [tests/test_l0_jobring.py](../tests/test_l0_jobring.py) |
 | `L0-RING-03` | a frame that is not ours returns None rather than garbage | [tests/test_l0_jobring.py](../tests/test_l0_jobring.py) |
