@@ -12,7 +12,7 @@ independent: **an id shared by both is not necessarily the same test.**
 | | count |
 |---|---:|
 | plan ids (matrix rows) | 139 |
-| implemented ids (pytest) | 66 |
+| implemented ids (pytest) | 71 |
 | shared id strings | 31 |
 | — of which **divergent** ⚠️ | **23** |
 | — of which plausibly the same | 8 |
@@ -183,7 +183,7 @@ the matrix covers levels and blocked items that are not yet written.
 
 ## Implemented, not in the matrix
 
-35 pytest ids have no matrix row — the matrix should gain one.
+40 pytest ids have no matrix row — the matrix should gain one.
 
 | id | implementation says | file |
 |---|---|---|
@@ -200,6 +200,11 @@ the matrix covers levels and blocked items that are not yet written.
 | `L0-ADDR-19` | a die whose PS port cannot reach D2D must REFUSE those addrs | [tests/test_l0_addressing.py](../tests/test_l0_addressing.py) |
 | `L0-ADDR-20` | the C1 guard must not fire on a die that IS wired correctly | [tests/test_l0_addressing.py](../tests/test_l0_addressing.py) |
 | `L0-ADDR-21` | the compute die carries a SECOND peer source byte so it can | [tests/test_l0_addressing.py](../tests/test_l0_addressing.py) |
+| `L0-BUILD-01` | the compute die must have at least one armed role-lock route | [tests/test_l0_build.py](../tests/test_l0_build.py) |
+| `L0-BUILD-02` | record whether the two dies ship the same FC recovery logic | [tests/test_l0_build.py](../tests/test_l0_build.py) |
+| `L0-BUILD-04` | each image's role strap must match the role it is deployed as | [tests/test_l0_build.py](../tests/test_l0_build.py) |
+| `L0-BUILD-05` | die A's TX conductors must be die B's RX conductors | [tests/test_l0_build.py](../tests/test_l0_build.py) |
+| `L0-BUILD-07` | both dies must instantiate the same NUM_PHY_LANES.""" | [tests/test_l0_build.py](../tests/test_l0_build.py) |
 | `L1-PROBE-07` | ROLE_STATUS is mirrored 0x1000 higher, as the APB decode says | [tests/test_l1_probe.py](../tests/test_l1_probe.py) |
 | `L1-PROBE-08` | `ipc_mailbox_0` — the second inbound D2D target — answers | [tests/test_l1_probe.py](../tests/test_l1_probe.py) |
 | `L1-PROBE-09` | `Board.read()` applies the target guard — on a real board | [tests/test_l1_probe.py](../tests/test_l1_probe.py) |
