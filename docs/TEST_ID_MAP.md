@@ -12,7 +12,7 @@ independent: **an id shared by both is not necessarily the same test.**
 | | count |
 |---|---:|
 | plan ids (matrix rows) | 139 |
-| implemented ids (pytest) | 71 |
+| implemented ids (pytest) | 80 |
 | shared id strings | 31 |
 | — of which **divergent** ⚠️ | **23** |
 | — of which plausibly the same | 8 |
@@ -183,7 +183,7 @@ the matrix covers levels and blocked items that are not yet written.
 
 ## Implemented, not in the matrix
 
-40 pytest ids have no matrix row — the matrix should gain one.
+49 pytest ids have no matrix row — the matrix should gain one.
 
 | id | implementation says | file |
 |---|---|---|
@@ -205,6 +205,15 @@ the matrix covers levels and blocked items that are not yet written.
 | `L0-BUILD-04` | each image's role strap must match the role it is deployed as | [tests/test_l0_build.py](../tests/test_l0_build.py) |
 | `L0-BUILD-05` | die A's TX conductors must be die B's RX conductors | [tests/test_l0_build.py](../tests/test_l0_build.py) |
 | `L0-BUILD-07` | both dies must instantiate the same NUM_PHY_LANES.""" | [tests/test_l0_build.py](../tests/test_l0_build.py) |
+| `L0-RING-01` | the pre-FCS frame is 546 B, per §3.1 | [tests/test_l0_jobring.py](../tests/test_l0_jobring.py) |
+| `L0-RING-02` | parse(build(job)) preserves every field, signs included.""" | [tests/test_l0_jobring.py](../tests/test_l0_jobring.py) |
+| `L0-RING-03` | a frame that is not ours returns None rather than garbage | [tests/test_l0_jobring.py](../tests/test_l0_jobring.py) |
+| `L0-RING-04` | the 32 B result record survives pack/unpack.""" | [tests/test_l0_jobring.py](../tests/test_l0_jobring.py) |
+| `L0-RING-05` | ★ the ring must clear +0x00..0xFF on the compute die | [tests/test_l0_jobring.py](../tests/test_l0_jobring.py) |
+| `L0-RING-06` | validate() must reject a layout that does not fit | [tests/test_l0_jobring.py](../tests/test_l0_jobring.py) |
+| `L0-RING-07` | consecutive slots are exactly one stride apart and disjoint.""" | [tests/test_l0_jobring.py](../tests/test_l0_jobring.py) |
+| `L0-RING-08` | the publish order is payload-then-descriptor | [tests/test_l0_jobring.py](../tests/test_l0_jobring.py) |
+| `L0-RING-09` | a short sample block is refused, not silently padded.""" | [tests/test_l0_jobring.py](../tests/test_l0_jobring.py) |
 | `L1-PROBE-07` | ROLE_STATUS is mirrored 0x1000 higher, as the APB decode says | [tests/test_l1_probe.py](../tests/test_l1_probe.py) |
 | `L1-PROBE-08` | `ipc_mailbox_0` — the second inbound D2D target — answers | [tests/test_l1_probe.py](../tests/test_l1_probe.py) |
 | `L1-PROBE-09` | `Board.read()` applies the target guard — on a real board | [tests/test_l1_probe.py](../tests/test_l1_probe.py) |
