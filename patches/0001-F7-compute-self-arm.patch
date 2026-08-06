@@ -1,0 +1,35 @@
+From: NanoSoC het-chiplet testing
+Subject: [PATCH] fix(d2d): arm the compute die's role lock — F7
+
+Without SELF_ARM_TRAIN_EN the compute die has NO armed role-lock route, so
+the heterogeneous link cannot reach FCSM=4 at all.
+
+`role_locked` is a mutual clock enable, not a status bit:
+    wire wlink_por_reset = ~poresetn | ~role_locked;
+        (axi_chiplet_controller.sv:801, feeding .por_reset at :1575)
+so with it low the Wlink is held in POR and nothing can train.
+
+All four arming routes are closed on the built image:
+    SW W1S of ROLE_CFG[1]  unreachable — ps_m omits d2d0/d2d1 (H2)
+    mask_hs_bypass_i       tied 1'b0 in the FPGA wrapper (:259)
+    nego_lost_w            NEGO_CFG_RESET = 7'h00, never overridden
+    SELF_ARM_TRAIN_EN      1'b0, the tidelink_top default (:227)
+
+The eth die works precisely because it sets this (nanosoc_eth_chiplet.sv:655,
+its I1 fix). Link 1 gets it too: self-arm is a property of the die, not the
+cable, and leaving link 1 unable to role-lock would reintroduce F7 the moment
+a second ribbon is fitted.
+
+Verify with no board: the het test repo's `make test-offline` runs
+L0-BUILD-01, which is xfail(strict) today and will FAIL once this lands —
+that failure is the signal to flip the gate to a plain assertion.
+
+diff --git a/src/rtl/nanosoc_compute_chiplet.sv b/src/rtl/nanosoc_compute_chiplet.sv
+--- a/src/rtl/nanosoc_compute_chiplet.sv
++++ b/src/rtl/nanosoc_compute_chiplet.sv
+@@ -698 +698 @@
+-    tidelink_top #(.NUM_PHY_LANES(NUM_PHY_LANES)) u_tidelink_0 (
++    tidelink_top #(.NUM_PHY_LANES(NUM_PHY_LANES), .SELF_ARM_TRAIN_EN(1'b1)) u_tidelink_0 (
+@@ -899 +899 @@
+-    tidelink_top #(.NUM_PHY_LANES(NUM_PHY_LANES)) u_tidelink_1 (
++    tidelink_top #(.NUM_PHY_LANES(NUM_PHY_LANES), .SELF_ARM_TRAIN_EN(1'b1)) u_tidelink_1 (

@@ -1,0 +1,32 @@
+From: NanoSoC het-chiplet testing
+Subject: [PATCH] fix(fpga): correct the compute die_b role strap — H6
+
+`kr260-compute-chiplet` carries die_b's BALL MAP with die_a's STRAP, so
+pairing it with the eth die_a image gives TWO MASTERS and no slave.
+
+The conductors are already right and must not be touched:
+    eth  kr260-eth-chiplet      pad_clk_tx = AD15   (strap 0, master)
+    cmp  kr260-compute-chiplet  pad_clk_tx = AC14   <- the eth die's RX ball
+so this image IS the correct partner for eth die_a. Only the role is wrong.
+
+Do NOT "fix" this by switching to -flip. That image has pad_clk_tx = AD15 —
+the same ball the eth die transmits on — so both dies would drive every
+ribbon conductor. KR260_BENCH_RUNBOOK.md already forbids it, and two 3.3 V
+CMOS drivers at DRIVE 8 fighting is a stress condition, not just a dead link.
+
+NOTE the naming consequence: after this, kr260-compute-chiplet (non-flip) is
+the die_b image, which INVERTS the eth convention where non-flip = die_a.
+Worth renaming the targets to -die-a/-die-b, or at minimum saying so in
+BUILD_NOTES.md — otherwise the next person reads the name and deploys the
+wrong pair.
+
+Verify with no board: L0-BUILD-04 in the het test repo is xfail(strict) and
+will FAIL once this lands. L0-BUILD-05 (conductors complementary) passes both
+before and after — that is the check that stops a "fix" via the ball map.
+
+diff --git a/tidelink/fpga/targets/kr260-compute-chiplet/tidelink_design.tcl b/tidelink/fpga/targets/kr260-compute-chiplet/tidelink_design.tcl
+--- a/tidelink/fpga/targets/kr260-compute-chiplet/tidelink_design.tcl
++++ b/tidelink/fpga/targets/kr260-compute-chiplet/tidelink_design.tcl
+@@ -159 +159 @@
+-    set_property -dict [list CONFIG.CONST_WIDTH {1} CONFIG.CONST_VAL {0}] $strap_const
++    set_property -dict [list CONFIG.CONST_WIDTH {1} CONFIG.CONST_VAL {1}] $strap_const
