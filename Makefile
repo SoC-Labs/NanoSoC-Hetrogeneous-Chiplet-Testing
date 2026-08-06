@@ -62,7 +62,7 @@ export I_ACCEPT_WEDGE_RISK
 
 .PHONY: help deps deps-full venv lint fmt test-id-map \
         test-offline test-single test-pair test-dataplane test-soak \
-        sim sim-het-pair sim-het-manual \
+        sim sim-het-pair sim-het-manual sim-decode \
         preflight preflight-single preflight-pair \
         deploy-pair bench-status bench-bringup bench-recover regress \
         lease release junit dashboard clean distclean
@@ -158,6 +158,17 @@ sim:
 	    exit 0
 	fi
 	$(MAKE) -C "$(HETSOC_ROOT)/sim"
+
+## sim-decode: L0-SIM-15 — the D2D sub-decoder at both window placements.
+##             ~10 s, no SoC, no link, no board. Settles the compute peer
+##             aperture (0x41, not 0x40) and proves the 224 MB window does not
+##             alias. The cheapest real answer in the whole sim suite.
+sim-decode:
+	@if [ ! -f "$(HETSOC_ROOT)/sim/Makefile" ]; then
+	    echo "sim-decode: no sim/Makefile yet. Skipping."
+	    exit 0
+	fi
+	$(MAKE) -C "$(HETSOC_ROOT)/sim" decode
 
 ## sim-het-manual: het pair, MANUAL bring-up posture — the cross-die data-plane
 ##                 suite that passes today. Steps over F6 testbench-side; proves

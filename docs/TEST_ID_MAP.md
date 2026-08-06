@@ -12,10 +12,10 @@ independent: **an id shared by both is not necessarily the same test.**
 | | count |
 |---|---:|
 | plan ids (matrix rows) | 139 |
-| implemented ids (pytest) | 86 |
-| shared id strings | 31 |
+| implemented ids (pytest) | 87 |
+| shared id strings | 32 |
 | — of which **divergent** ⚠️ | **23** |
-| — of which plausibly the same | 8 |
+| — of which plausibly the same | 9 |
 
 ## ⚠️ Divergent — same id, different test
 
@@ -52,7 +52,7 @@ Never resolve one against the other. Cite the namespace explicitly.
 
 Shared ids that are the same test — either scored similar enough, or
 listed in `CONFIRMED_SAME` in the generator after a human read both.
-(8 are human-confirmed, marked ✓.)
+(9 are human-confirmed, marked ✓.)
 
 | id | plan says | implementation says | file |
 |---|---|---|---|
@@ -63,11 +63,12 @@ listed in `CONFIRMED_SAME` in the generator after a human read both.
 | `L0-SIM-08` ✓ | inbound confinement DECERR | the ETH mailbox byte (0x23) must be REFUSED by the compute die | [sim/het_pair/test_het_manual.py](../sim/het_pair/test_het_manual.py) |
 | `L0-SIM-10` ✓ | multi-word burst | 8 consecutive words cross the aperture intact | [sim/het_pair/test_het_manual.py](../sim/het_pair/test_het_manual.py) |
 | `L0-SIM-13` ✓ | TX-aperture wedge gate | a TX-aperture access with the link DOWN must ERROR, not hang | [sim/het_pair/test_het_manual.py](../sim/het_pair/test_het_manual.py) |
+| `L0-SIM-15` ✓ | **compute decode aliasing + peer byte** | the compute die's peer aperture decodes at 0x41, not 0x40 | [sim/d2d_decode/test_d2d_decode.py](../sim/d2d_decode/test_d2d_decode.py) |
 | `L0-SIM-17` ✓ | asymmetric reset ordering | with the far die held in reset, the near die must stay usable | [sim/het_pair/test_het_manual.py](../sim/het_pair/test_het_manual.py) |
 
 ## Planned, not implemented
 
-108 matrix ids have no pytest test of that id. Expected —
+107 matrix ids have no pytest test of that id. Expected —
 the matrix covers levels and blocked items that are not yet written.
 
 | id | plan says |
@@ -91,7 +92,6 @@ the matrix covers levels and blocked items that are not yet written.
 | `L0-SIM-11` | mailbox IRQ source latches |
 | `L0-SIM-12` | `d2d_irq` → NVIC wiring |
 | `L0-SIM-14` | HREADY-loop guard |
-| `L0-SIM-15` | **compute decode aliasing + peer byte** |
 | `L0-SIM-16` | TideChart election over a real link |
 | `L0-SIM-18` | error injection / recovery |
 | `L0-TGT-01` | registry completeness |

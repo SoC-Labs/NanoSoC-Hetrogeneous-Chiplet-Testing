@@ -72,6 +72,7 @@ CONFIRMED_SAME = {
     "L0-SIM-10",  # multi-word burst             <- 8 consecutive words intact
     "L0-SIM-13",  # TX-aperture wedge gate       <- link-down TX access ERRORs
     "L0-SIM-17",  # asymmetric reset ordering    <- far-die-dark, near die survives
+    "L0-SIM-15",  # compute decode alias + peer  <- 0x41 confirmed, no 224MB alias
 }
 
 

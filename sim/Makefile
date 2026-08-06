@@ -52,9 +52,9 @@ COMPUTE_CHIPLET_HOME ?= $(abspath $(SIM_DIR)/../deps/compute-chiplet)
 export ETH_CHIPLET_HOME
 export COMPUTE_CHIPLET_HOME
 
-.PHONY: all het-pair sim manual clean
+.PHONY: all het-pair sim manual decode clean
 
-all: het-pair
+all: het-pair decode
 
 ## het-pair: library-partitioned structural elaboration of the heterogeneous pair.
 het-pair:
@@ -71,5 +71,12 @@ sim:
 manual:
 	@$(MAKE) -C "$(SIM_DIR)/het_pair" manual
 
+## decode: L0-SIM-15 — chiplet_d2d_decode at both window placements. ~10 s,
+##         no SoC, no link. Settles the compute 0x40-vs-0x41 peer aperture and
+##         the 224 MB window alias.
+decode:
+	@$(MAKE) -C "$(SIM_DIR)/d2d_decode" sim
+
 clean:
 	@$(MAKE) -C "$(SIM_DIR)/het_pair" clean
+	@$(MAKE) -C "$(SIM_DIR)/d2d_decode" clean
